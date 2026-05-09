@@ -1942,8 +1942,54 @@ class FireworksService:
                         )
                         click_val = click_result.get("result", {}).get("value", {})
                         if click_val.get("clicked"):
-                            await asyncio.sleep(4)
-                            # Now look for the OTP URL on the opened email page
+                            await asyncio.sleep(5)
+                            # IMPORTANT: GMX opens email in detail-body-iframe (gmxnet.mailbody-ui.de)
+                            # The main frame stays on the inbox URL. We must search ALL frames.
+                            targets_result = await client.send_to_session(
+                                session_id, "Target.getTargets", {}
+                            )
+                            targets = targets_result.get("value", {}).get("targetInfos", [])
+                            
+                            # Also check all existing CDP sessions for OTP URL
+                            for target_info in targets:
+                                target_id = target_info.get("targetId", "")
+                                if not target_id or target_id == session_id:
+                                    continue
+                                try:
+                                    target_session = await client.attach_to_target(target_id)
+                                    frame_result = await client.evaluate(
+                                        target_session,
+                                        "(function() { return window.location.href; })()",
+                                        return_by_value=True
+                                    )
+                                    frame_url = frame_result.get("result", {}).get("value", "") or ""
+                                    if "mailbody-ui.de" in frame_url or "detail-body" in frame_url:
+                                        logger.info(f"[FW Register] Found mailbody frame: {frame_url[:80]}...")
+                                        body_result = await client.evaluate(
+                                            target_session,
+                                            "(function() { return document.body ? document.body.innerHTML : ''; })()",
+                                            return_by_value=True
+                                        )
+                                        body_html = body_result.get("result", {}).get("value", "") or ""
+                                        if body_html:
+                                            import re as _re
+                                            urls = _re.findall(r'https://app\.fireworks\.ai/signup/(?:confirm|verify|email_verification)[^\s"\'<>]+', body_html)
+                                            if urls:
+                                                otp_url = urls[0]
+                                                # Decode HTML entities
+                                                import html as _html
+                                                otp_url = _html.unescape(otp_url)
+                                                logger.info(f"[FW Register] OTP URL from mailbody frame: {otp_url[:80]}...")
+                                                await client.detach_from_target(target_session)
+                                                break
+                                    await client.detach_from_target(target_session)
+                                except Exception as _e:
+                                    pass
+                            
+                            if otp_url:
+                                break
+                            
+                            # Fallback: scan main frame DOM (this path rarely works for GMX emails)
                             email_result = await client.evaluate(
                                 session_id,
                                 """
@@ -1964,7 +2010,7 @@ class FireworksService:
                             if isinstance(email_val, dict) and email_val.get("found"):
                                 otp_url = email_val.get("url", "")
                                 if otp_url:
-                                    logger.info(f"[FW Register] OTP URL from email page: {otp_url[:80]}...")
+                                    logger.info(f"[FW Register] OTP URL from main frame: {otp_url[:80]}...")
                                     break
 
                 if attempt < max_retries - 1:
