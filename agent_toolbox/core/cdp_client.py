@@ -443,30 +443,27 @@ class CDPClient:
 
 async def get_browser_ws_endpoint(cdp_port: int = 9222, timeout: float = 15.0) -> str:
     """
-    Holt den Browser websocket endpoint vom CDP HTTP endpoint.
+    Holt den Browser websocket endpoint vom CDP HTTP endpoint via urllib.
     
-    Chrome DevTools kann auf IPv4 (127.0.0.1) ODER IPv6 ([::1]) lauschen.
-    Probiere zuerst IPv6, dann IPv4.
+    Nutzt urllib (Standard Library) statt aiohttp für Zuverlässigkeit.
     """
-    import aiohttp
+    import urllib.request
     
-    hosts = [f"http://[::1]:{cdp_port}", f"http://127.0.0.1:{cdp_port}"]
+    url = f"http://127.0.0.1:{cdp_port}/json/version"
+    logger.info(f"Hole CDP endpoint von {url}")
     
-    for url in hosts:
-        try:
-            logger.info(f"Hole CDP endpoint von {url}")
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-                    if resp.status != 200:
-                        continue
-                    data = await resp.json()
-                    ws_url = data.get("webSocketDebuggerUrl")
-                    if ws_url:
-                        logger.info(f"CDP Endpoint gefunden: {ws_url[:60]}...")
-                        return ws_url
-        except Exception as e:
-            logger.debug(f"CDP probe auf {url} fehlgeschlagen: {e}")
-            continue
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Python/CDP"})
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        data = resp.read()
+        import json
+        d = json.loads(data)
+        ws_url = d.get("webSocketDebuggerUrl")
+        if ws_url:
+            logger.info(f"CDP Endpoint gefunden: {ws_url[:60]}...")
+            return ws_url
+    except Exception as e:
+        logger.error(f"CDP endpoint fehlgeschlagen: {e}")
     
     raise RuntimeError(f"Chrome DevTools nicht erreichbar auf Port {cdp_port}")
 
