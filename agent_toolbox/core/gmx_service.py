@@ -862,45 +862,6 @@ class GmxService:
         })
 
     async def create_alias(self, alias_name: Optional[str] = None, cdp_port: int = 9222) -> Dict[str, Any]:
-        """Erstellt einen neuen GMX Alias via CDP DOM + Input (VERIFIED 2026-05-11).
-        
-        Flow:
-        1. CUA-Navigation zu E-Mail-Adressen
-        2. DOM.performSearch "localPart" → Input-Koordinaten
-        3. CDP Input.dispatchKeyEvent → Alias-Name tippen
-        4. Hinzufügen Button via DOM search → CDP click
-        5. Verify via DOM.performSearch alias_name
-        """
-        js = f'''(function(){{
-            const bodyText = document.body.textContent;
-            
-            // Check rows specifically
-            const rows = document.querySelectorAll(".table_body-row, .table_row");
-            let foundInRow = false;
-            for (const row of rows) {{
-                if (row.textContent.includes("{alias_name}")) {{
-                    foundInRow = true;
-                    break;
-                }}
-            }}
-            
-            const hasSuccess = /erfolgreich|angelegt|erstellt|hinzugef.gt/.test(bodyText);
-            const hasError = /fehler|bereits vergeben|nicht verf.gbar|maximal|existiert/.test(bodyText);
-            const unavailableMatch = bodyText.match(/Diese E-Mail-Adresse \\([^)]+\\) ist nicht verf.gbar/);
-            
-            return {{
-                foundInRow: foundInRow,
-                hasSuccess: hasSuccess,
-                hasError: hasError,
-                isUnavailable: !!unavailableMatch,
-                unavailableMsg: unavailableMatch ? unavailableMatch[0] : null,
-                bodyHasAlias: bodyText.includes("{alias_name}"),
-            }};
-        }})()'''
-        result = await client.evaluate(session_id, js, return_by_value=True)
-        return result.get("result", {}).get("value", {})
-
-    async def create_alias(self, alias_name: Optional[str] = None, cdp_port: int = 9222) -> Dict[str, Any]:
         """Erstellt einen neuen GMX Alias.
         
         Flow:
@@ -964,10 +925,11 @@ class GmxService:
                     steps.append("clicked_add")
                 await asyncio.sleep(5)
                 
-                # Verify via DOM search
+                # Verify via DOM search — suche full email "{alias}@gmx.de"
+                # Input-Feld hat NUR den Namen (ohne @gmx.de) → kein False-Positive!
                 check = await client.send_to_session(
                     session_id, "DOM.performSearch",
-                    {"query": current_alias, "includeUserAgentShadowDOM": True}
+                    {"query": alias_email, "includeUserAgentShadowDOM": True}
                 )
                 if check['resultCount'] > 0:
                     logger.info(f"✅ Alias erstellt: {alias_email}")
