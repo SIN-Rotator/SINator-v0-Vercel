@@ -100,19 +100,35 @@ class GmxService:
     # ═══════════════════════════════════════════════════════════════════════════════
 
     async def _connect_to_browser(self, cdp_port: int) -> Tuple[CDPClient, str, str]:
-        """Erstellt eine CDP-Verbindung zum laufenden Browser."""
+        """Erstellt eine CDP-Verbindung zum laufenden Browser — sucht GMX Tab via URL filter."""
         ws_url = await get_browser_ws_endpoint(cdp_port)
         client = CDPClient(ws_url)
         await client.connect()
-        target = await get_page_target(client)
+        
+        # Finde das GMX Tab spezifisch — nicht einfach das erste Page-Target
+        targets = await client.get_targets()
+        target = None
+        
+        # Priorität 1: GMX Tab mit SID (eingeloggt)
+        for t in targets:
+            url = t.get("url", "")
+            if t.get("type") == "page" and "sid=" in url and "gmx.net" in url:
+                target = t
+                break
+        
+        # Priorität 2: GMX Tab ohne SID
+        if not target:
+            target = await get_page_target(client, url_filter="gmx.net")
+        
         if not target:
             await client.disconnect()
-            raise RuntimeError("Kein Page-Target im Browser gefunden")
+            raise RuntimeError("Kein GMX Page-Target im Browser gefunden")
+        
         target_id = target["targetId"]
         session_id = await client.attach_to_target(target_id)
         await client.send_to_session(session_id, "Page.enable")
         await client.send_to_session(session_id, "Runtime.enable")
-        logger.info(f"CDP Session bereit: target={target_id[:15]}...")
+        logger.info(f"CDP Session: target={target_id[:15]}... url={target.get('url','')[:60]}")
         return client, session_id, target_id
 
     async def _screenshot(self, client: CDPClient, session_id: str, label: str) -> str:
@@ -393,87 +409,157 @@ class GmxService:
 
     async def _navigate_to_all_email_addresses(self, client: CDPClient, session_id: str) -> bool:
         """
-        Navigiert zur GMX E-Mail-Adressen Seite via CUA.
+        Navigiert zur GMX E-Mail-Adressen Seite via CUA Klicks.
         
-        VERIFIED HYBRID (2026-05-11):
-        - CUA check: page title contains "Einstellungen" or "FreeMail" → on settings page
-        - CUA right-click "JS" avatar → opens account dropdown → navigates to settings
-        - Returns True if we land on a page with E-Mail-Adressen content
+        FLOW:
+        1. Navigate to www.gmx.net — GMX homepage with E-Mail link
+        2. CUA click AXLink (E-Mail) → accessible inbox (Barrierefreies Postfach)
+        3. CUA click AXButton (Einstellungen für Ihr GMX Postfach) → settings
+        4. CUA find + click E-Mail-Adressen → email addresses page
+        
+        Uses raw cua-driver subprocess + CUA for all clicks.
         """
         import subprocess, json, re
+        import time as _time
 
-        # Step 1: Get CUA window state to check current page
         try:
-            res = subprocess.run(
-                ["cua-driver", "call", "list_windows"],
-                input=json.dumps({"query": "Chrome"}),
-                capture_output=True, text=True, timeout=10
-            )
-            wd = json.loads(res.stdout)
-            cua_pid = cua_wid = None
-            for w in wd.get('windows', []):
-                if ('GMX' in w.get('title', '') or 'FreeMail' in w.get('title', '')) and w.get('is_on_screen'):
-                    cua_pid = w['pid']
-                    cua_wid = w['window_id']
+            # Step 0: Get SID and navigate to GMX homepage
+            targets = await client.get_targets()
+            current_url = ""
+            sid = None
+            gmx_target_id = None
+            for t in targets:
+                url = t.get("url", "")
+                if t.get("type") == "page" and "sid=" in url and "gmx.net" in url:
+                    current_url = url
+                    gmx_target_id = t.get("targetId")
+                    m = re.search(r'sid=([a-f0-9]{70,})', url)
+                    if m:
+                        sid = m.group(1)
                     break
 
-            if not cua_pid or not cua_wid:
-                logger.warning("GMX window nicht gefunden via CUA")
-                return False
-
-            res2 = subprocess.run(
-                ["cua-driver", "call", "get_window_state"],
-                input=json.dumps({"pid": cua_pid, "window_id": cua_wid, "query": "Einstellungen"}),
-                capture_output=True, text=True, timeout=15
-            )
-            state = json.loads(res2.stdout)
-            lines = state.get('tree_markdown', '')
-
-            # Already on settings page?
-            if 'E-Mail-Adressen' in lines or 'Einstellungen' in lines:
-                logger.info("Bereits auf E-Mail-Adressen/Einstellungen Seite")
+            if 'email_addresses' in current_url:
                 return True
 
-            # Already on mailbox? Try navigating to settings via "JS" avatar
-            if 'GMX FreeMail' in lines or 'Posteingang' in lines:
-                # Right-click on "JS" avatar to open account dropdown
-                for i, line in enumerate(lines.split('\\n')):
-                    s = line.strip()
-                    if 'AXButton "JS"' in s:
-                        m = re.search(r'\]\s*-\s*\[(\d+)\]\s*AXButton\s*"JS"', s)
-                        if m:
-                            el = int(m.group(1))
-                            logger.info(f"CUA right-click on avatar [{el}]")
-                            subprocess.run(
-                                ["cua-driver", "call", "right_click"],
-                                input=json.dumps({
-                                    "pid": cua_pid, "window_id": cua_wid, "element_index": el
-                                }),
-                                capture_output=True, text=True, timeout=10
-                            )
-                            await asyncio.sleep(3)
-                            break
+            if not sid:
+                logger.error("Kein SID in Target-URL")
+                return False
 
-                # Check if we landed on settings page
-                res3 = subprocess.run(
-                    ["cua-driver", "call", "get_window_state"],
-                    input=json.dumps({"pid": cua_pid, "window_id": cua_wid, "query": "Einstellungen"}),
-                    capture_output=True, text=True, timeout=15
+            # Attach to GMX tab if not already
+            if not gmx_target_id:
+                gmx_target_id = targets[1].get("targetId")
+
+            # Navigate GMX tab to homepage
+            gmx_url = f"https://www.gmx.net/?sid={sid}"
+            await client.send_to_session(session_id, "Page.navigate", {"url": gmx_url})
+            await asyncio.sleep(6)
+
+            # Wait for CUA to see the page (takes a moment)
+            _time.sleep(2)
+
+            # Find GMX window via CUA — try multiple times
+            cua_pid = cua_wid = None
+            for attempt in range(3):
+                res = subprocess.run(
+                    ["cua-driver", "call", "list_windows"],
+                    capture_output=True, text=True, timeout=10,
+                    input=json.dumps({"query": "Chrome"})
                 )
-                state3 = json.loads(res3.stdout)
-                lines3 = state3.get('tree_markdown', '')
-                if 'E-Mail-Adressen' in lines3 or 'Einstellungen' in lines3:
-                    logger.info("Navigiert zu Einstellungen via CUA")
-                    return True
+                wd = json.loads(res.stdout)
+                for w in wd.get('windows', []):
+                    title = w.get('title', '')
+                    app = w.get('app_name', '')
+                    if w.get('is_on_screen') and app == 'Google Chrome' and ('GMX' in title or 'kostenlose' in title.lower() or 'FreeMail' in title):
+                        cua_pid = w['pid']
+                        cua_wid = w['window_id']
+                        logger.info(f"CUA window: {title[:80]}")
+                        break
+                if cua_pid:
+                    break
+                await asyncio.sleep(2)
 
-            # Fallback: return False (caller should use CUA navigation)
-            logger.warning("CUA navigation konnte E-Mail-Adressen nicht erreichen")
+            if not cua_pid:
+                logger.warning("GMX window nicht via CUA gefunden")
+                return False
+
+            def cua_get_state():
+                r = subprocess.run(
+                    ["cua-driver", "call", "get_window_state"],
+                    capture_output=True, text=True, timeout=15,
+                    input=json.dumps({"pid": cua_pid, "window_id": cua_wid})
+                )
+                return json.loads(r.stdout).get('tree_markdown', '')
+
+            def cua_click(el):
+                subprocess.run(
+                    ["cua-driver", "call", "click"],
+                    capture_output=True, text=True, timeout=10,
+                    input=json.dumps({"pid": cua_pid, "window_id": cua_wid, "element_index": el})
+                )
+
+            trees = cua_get_state()
+
+            # Already on email addresses?
+            if 'E-Mail-Adressen' in trees:
+                return True
+
+            def _find_el(lines_str: str, text: str, el_type: str = "") -> int:
+                """Extract element_index from CUA AX tree line matching text and optional type."""
+                for line in lines_str.split('\n'):
+                    s = line.strip()
+                    if text in s and (not el_type or el_type in s):
+                        m = re.search(r'\]?\s*-\s*\[(\d+)\]', s)
+                        if m:
+                            return int(m.group(1))
+                return -1
+
+            # Step 1: Click E-Mail AXLink
+            el = _find_el(trees, 'E-Mail', 'AXLink')
+            if el > 0:
+                logger.info(f"CUA click E-Mail [{el}]")
+                cua_click(el)
+                await asyncio.sleep(6)
+                trees = cua_get_state()
+
+            # Step 2: Click Einstellungen AXButton
+            el = _find_el(trees, 'Einstellungen', 'AXButton')
+            if el > 0:
+                logger.info(f"CUA click Einstellungen [{el}]")
+                cua_click(el)
+                await asyncio.sleep(6)
+                trees = cua_get_state()
+
+            # Step 3: Check for E-Mail-Adressen
+            if 'E-Mail-Adressen' in trees:
+                logger.info("E-Mail-Adressen Seite erreicht!")
+                # Verify via CDP target URL (CUA nav not tracked by CDP session)
+                await asyncio.sleep(2)
+                targets3 = await client.get_targets()
+                for t in targets3:
+                    url = t.get("url", "")
+                    if t.get("type") == "page" and "sid=" in url and "mail_settings" in url and "email_addresses" in url:
+                        logger.info(f"CDP confirms email_addresses URL: {url[:100]}")
+                        return True
+                # Fallback: page was reached via CUA but CDP doesn't see it
+                logger.info("E-Mail-Adressen via CUA (CDP may not see URL)")
+                return True
+
+            # Step 4: Click E-Mail-Adressen link
+            el = _find_el(trees, 'E-Mail-Adressen')
+            if el > 0:
+                logger.info(f"CUA click E-Mail-Adressen [{el}]")
+                cua_click(el)
+                await asyncio.sleep(6)
+                return True
+
+            logger.warning("E-Mail-Adressen nicht via CUA gefunden")
             return False
 
         except Exception as e:
-            logger.error(f"CUA navigation failed: {e}")
-
-        return False
+            logger.error(f"Navigation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     # ═══════════════════════════════════════════════════════════════════════════════
     #  ALIAS DELETION (VERIFIED 2026-05-11)
@@ -760,23 +846,80 @@ class GmxService:
     # ═══════════════════════════════════════════════════════════════════════════════
 
     async def _find_alias_input_coords(self, client: CDPClient, session_id: str) -> Optional[Dict[str, Any]]:
-        """Findet das erste Alias-Input-Feld via DOM.performSearch (nicht Runtime.evaluate)."""
-        search = await client.send_to_session(session_id, "DOM.performSearch", {
-            "query": "localPart", "includeUserAgentShadowDOM": True
-        })
-        if search['resultCount'] == 0:
+        """Findet und fokussiert das Alias-Input via CUA AXTextField.
+        
+        Cross-origin iframe (3c.gmx.net) verhindert CDP DOM box model.
+        CUA click auf AXTextField fokussiert das Input für CDP key events.
+        
+        Returns: {"x": center_x, "y": center_y} für Button-Positions-Berechnung
+        """
+        import subprocess, json, re as _re
+        
+        res = subprocess.run(
+            ["cua-driver", "call", "list_windows"],
+            capture_output=True, text=True, timeout=10,
+            input=json.dumps({"query": "Chrome"})
+        )
+        wd = json.loads(res.stdout)
+        cua_pid = cua_wid = None
+        for w in wd.get('windows', []):
+            app = w.get('app_name', '')
+            title = w.get('title', '')
+            if w.get('is_on_screen') and app == 'Google Chrome' and ('GMX' in title or 'Einstellungen' in title):
+                cua_pid = w['pid']
+                cua_wid = w['window_id']
+                break
+        
+        if not cua_pid:
+            logger.warning("GMX window nicht via CUA gefunden")
             return None
-
-        nodes = await client.send_to_session(session_id, "DOM.getSearchResults", {
-            "searchId": search['searchId'], "fromIndex": 0, "toIndex": 1
-        })
-        for nid in nodes['nodeIds']:
-            try:
-                box = await client.send_to_session(session_id, "DOM.getBoxModel", {"nodeId": nid})
-                c = box['model']['content']
-                return {"x": c[0] + (c[2]-c[0])/2, "y": c[1] + (c[7]-c[1])/2}
-            except Exception:
+        
+        r = subprocess.run(
+            ["cua-driver", "call", "get_window_state"],
+            capture_output=True, text=True, timeout=15,
+            input=json.dumps({"pid": cua_pid, "window_id": cua_wid})
+        )
+        state = json.loads(r.stdout)
+        lines = state.get('tree_markdown', '')
+        
+        # Find AXTextField (anonymous or labeled) in the page content area
+        # The alias input is typically unnamed, after "Fun- und Alias-Adressen"
+        found_fun = False
+        for line in lines.split('\n'):
+            s = line.strip()
+            if 'Fun- und Alias-Adressen' in s:
+                found_fun = True
                 continue
+            if found_fun and 'AXTextField' in s:
+                m = _re.search(r'\]?\s*-\s*\[(\d+)\]', s)
+                if m:
+                    el = int(m.group(1))
+                    logger.info(f"CUA click input [{el}]")
+                    subprocess.run(
+                        ["cua-driver", "call", "click"],
+                        capture_output=True, text=True, timeout=10,
+                        input=json.dumps({"pid": cua_pid, "window_id": cua_wid, "element_index": el})
+                    )
+                    await asyncio.sleep(0.5)
+                    # Return estimated coordinates for button position calculation
+                    return {"x": 350, "y": 340, "cua_element": el}
+        
+        # Fallback: try all AXTextFields
+        for line in lines.split('\n'):
+            s = line.strip()
+            if 'AXTextField' in s and 'Adress' not in s and 'Suchleiste' not in s:
+                m = _re.search(r'\]?\s*-\s*\[(\d+)\]', s)
+                if m:
+                    el = int(m.group(1))
+                    logger.info(f"CUA click fallback input [{el}]")
+                    subprocess.run(
+                        ["cua-driver", "call", "click"],
+                        capture_output=True, text=True, timeout=10,
+                        input=json.dumps({"pid": cua_pid, "window_id": cua_wid, "element_index": el})
+                    )
+                    await asyncio.sleep(0.5)
+                    return {"x": 350, "y": 340, "cua_element": el}
+        
         return None
 
     async def _find_hinzufuegen_button_coords(
@@ -821,22 +964,8 @@ class GmxService:
         self, client: CDPClient, session_id: str, alias_name: str,
         input_coords: Dict[str, Any]
     ) -> bool:
-        """Füllt das Alias-Input via CDP Input.dispatchKeyEvent (funktioniert ohne Runtime.evaluate)."""
-        ix, iy = input_coords['x'], input_coords['y']
-        logger.info(f"Click input at ({ix:.0f},{iy:.0f})")
-        await client.send_to_session(session_id, "Input.dispatchMouseEvent", {
-            "type": "mouseMoved", "x": ix, "y": iy
-        })
-        await asyncio.sleep(0.2)
-        await client.send_to_session(session_id, "Input.dispatchMouseEvent", {
-            "type": "mousePressed", "x": ix, "y": iy, "button": "left", "clickCount": 1
-        })
-        await asyncio.sleep(0.1)
-        await client.send_to_session(session_id, "Input.dispatchMouseEvent", {
-            "type": "mouseReleased", "x": ix, "y": iy, "button": "left", "clickCount": 1
-        })
-        await asyncio.sleep(0.8)
-
+        """Füllt das Alias-Input via CDP Input.dispatchKeyEvent (Input bereits CUA-fokussiert)."""
+        logger.info(f"CDP type '{alias_name}' into focused input")
         for char in alias_name:
             await client.send_to_session(session_id, "Input.dispatchKeyEvent", {
                 "type": "char", "text": char, "key": char
@@ -1004,6 +1133,20 @@ class GmxService:
                     "error": "Konnte nicht zu allEmailAddresses navigieren",
                 }
             steps_completed.append("navigated_to_addresses")
+
+            # Sync CDP session to current URL (CUA nav changes URL)
+            targets = await client.get_targets()
+            for t in targets:
+                url = t.get("url", "")
+                if t.get("type") == "page" and "sid=" in url and "mail_settings" in url:
+                    current_mail_url = url
+                    # Re-navigate CDP session if needed
+                    txt = await client.evaluate(session_id, "window.location.href", return_by_value=True)
+                    cdp_url = txt.get("result", {}).get("value", "")
+                    if "mail_settings" not in cdp_url:
+                        await client.send_to_session(session_id, "Page.navigate", {"url": current_mail_url})
+                        await asyncio.sleep(4)
+                    break
 
             # --- STEP 2: Delete existing alias (HYBRID CDP DOM + CUA) ---
             await client.send_to_session(session_id, "DOM.enable")
