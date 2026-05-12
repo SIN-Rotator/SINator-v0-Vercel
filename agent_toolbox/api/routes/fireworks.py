@@ -29,6 +29,8 @@ from agent_toolbox.api.schemas import (
     FireworksConfirmResponse,
     FireworksApiKeyRequest,
     FireworksApiKeyResponse,
+    FireworksConfirmExistingRequest,
+    FireworksConfirmExistingResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,7 @@ async def register_fireworks(request: FireworksRegisterRequest):
         result = await get_fireworks_service().register(
             email=request.email,
             password=request.password,
+            gmx_password=request.gmx_password,
             cdp_port=cdp_port,
         )
         return FireworksRegisterResponse(
@@ -158,4 +161,53 @@ async def create_fireworks_apikey(request: FireworksApiKeyRequest):
         )
     except Exception as e:
         logger.error(f"Fireworks API-Key-Erstellung fehlgeschlagen: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/confirm-existing", response_model=FireworksConfirmExistingResponse)
+async def confirm_existing_fireworks(request: FireworksConfirmExistingRequest):
+    """
+    RECOVERY-FLOW: Bestätigt einen EXISTIERENDEN Fireworks Account und erstellt API-Key.
+
+    Dieser Endpoint ist für den Fall dass:
+    - Der Fireworks Account wurde bereits erstellt (Email ist registriert)
+    - Die Verify-Email liegt in GMX (auch wenn schon älter/gelesen)
+    - Der Account muss NUR noch bestätigt werden
+
+    FLOW:
+    1. GMX MailCheck Extension öffnen
+    2. Fireworks Verify-Mail suchen (auch gelesen/alt)
+    3. Mail öffnen → Verify-URL extrahieren
+    4. Verify-URL in neuem Tab öffnen → Account bestätigen
+    5. Fireworks Login (falls nötig)
+    6. Account Setup ausfüllen (falls nötig)
+    7. API-Key erstellen
+
+    Args:
+        email: Fireworks Account Email (GMX Alias)
+        password: Fireworks Account Passwort
+
+    Returns:
+        status, account_email, api_key, api_key_name, account_verified
+    """
+    t0 = time.time()
+    cdp_port = _require_browser()
+
+    try:
+        result = await get_fireworks_service().confirm_existing_fireworks_account(
+            email=request.email,
+            password=request.password,
+            cdp_port=cdp_port,
+        )
+        return FireworksConfirmExistingResponse(
+            status=result["status"],
+            account_email=result.get("account_email", request.email),
+            api_key=result.get("api_key"),
+            api_key_name=result.get("api_key_name"),
+            account_verified=result.get("account_verified", False),
+            execution_time=f"{time.time()-t0:.2f}s",
+            error=result.get("error"),
+        )
+    except Exception as e:
+        logger.error(f"Fireworks Recovery-Flow fehlgeschlagen: {e}")
         raise HTTPException(status_code=500, detail=str(e))

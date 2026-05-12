@@ -2943,6 +2943,7 @@ class GmxService:
                 if info and info.get("mailId"):
                     mail_id = info["mailId"]
                     logger.info(f"Extension: Email gefunden id={mail_id}")
+                    before_ids = {t["targetId"] for t in await client.get_targets()}
                     await client.evaluate(ext_session, f"""(function() {{
                         var links = document.querySelectorAll('a.email');
                         for (var i = 0; i < links.length; i++) {{
@@ -2950,27 +2951,67 @@ class GmxService:
                         }}
                     }})()""", return_by_value=True)
                     await asyncio.sleep(5)
-                    targets = await client.get_targets()
-                    for t in targets:
+                    after_targets = await client.get_targets()
+                    gmx_target = None
+                    for t in after_targets:
+                        tid = t.get("targetId", "")
                         url = t.get("url", "")
-                        if "navigator.gmx.net/mail" in url and "sid=" in url:
-                            ms = await client.attach_to_target(t["targetId"])
+                        if tid not in before_ids and "gmx.net" in url:
+                            gmx_target = t
+                            break
+                    if gmx_target:
+                        logger.info(f"Extension: Neuer GMX Tab: {gmx_target.get('url','')[:100]}")
+                        ms = await client.attach_to_target(gmx_target["targetId"])
+                        await client.send_to_session(ms, "Page.enable")
+                        await client.send_to_session(ms, "Runtime.enable")
+                        await asyncio.sleep(4)
+                        otp_url = None
+                        all_targets = await client.get_targets()
+                        for t in all_targets:
+                            t_url = t.get("url", "")
+                            if "mailbody" in t_url or "detail-body" in t_url or "mailbody-ui" in t_url:
+                                try:
+                                    iframe_sid = await client.attach_to_target(t["targetId"])
+                                    body = await client.evaluate(iframe_sid, 'document.body ? document.body.innerText : ""', return_by_value=True)
+                                    b = body.get("result", {}).get("value", "") or ""
+                                    if not b:
+                                        body2 = await client.evaluate(iframe_sid, 'document.body ? document.body.innerHTML : ""', return_by_value=True)
+                                        b = body2.get("result", {}).get("value", "") or ""
+                                    urls = re.findall(r'https?://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify)[^\s\"\'<>]+', b)
+                                    if urls:
+                                        otp_url = html_module.unescape(urls[0])
+                                        break
+                                except Exception:
+                                    pass
+                        if not otp_url:
                             iframe_r = await client.evaluate(ms, """(function() {
                                 var f = document.querySelector('#thirdPartyFrame_mail');
-                                return f ? f.src : null;
+                                return f ? {src: f.src, found: true} : {found: false};
                             })()""", return_by_value=True)
-                            src = iframe_r.get("result", {}).get("value")
-                            if src and ("3c.gmx.net" in src or "3c-bap.gmx.net" in src):
-                                await client.navigate(ms, src)
-                                await asyncio.sleep(6)
-                                body = await client.evaluate(ms, 'document.body ? document.body.innerText : \"\"', return_by_value=True)
-                                b = body.get("result", {}).get("value", "") or ""
-                                import re
-                                urls = re.findall(r'https?://app\.fireworks\.ai/signup/(?:confirm|verify)[^\s\"\'<>]+', b)
-                                if urls:
-                                    return {"status": "success", "otp_url": html.unescape(urls[0]), "mail_id": mail_id,
-                                            "execution_time": f"{time.time() - start_time:.2f}s"}
-                            await client.send("Target.closeTarget", {"targetId": t["targetId"]})
+                            iframe_val = iframe_r.get("result", {}).get("value", {})
+                            if iframe_val.get("found"):
+                                src = iframe_val.get("src", "")
+                                if src:
+                                    await client.navigate(ms, src)
+                                    await asyncio.sleep(6)
+                                    body = await client.evaluate(ms, 'document.body ? document.body.innerText : ""', return_by_value=True)
+                                    b = body.get("result", {}).get("value", "") or ""
+                                    urls = re.findall(r'https?://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify)[^\s\"\'<>]+', b)
+                                    if urls:
+                                        otp_url = html_module.unescape(urls[0])
+                        if not otp_url:
+                            body3 = await client.evaluate(ms, 'document.body ? document.body.innerText : ""', return_by_value=True)
+                            b3 = body3.get("result", {}).get("value", "") or ""
+                            urls3 = re.findall(r'https?://[^\s\"\'<>]*fireworks[^\s\"\'<>]*', b3)
+                            if urls3:
+                                otp_url = html_module.unescape(urls3[0])
+                        if otp_url:
+                            logger.info(f"Extension: OTP URL gefunden: {otp_url[:80]}...")
+                            await client.send("Target.closeTarget", {"targetId": gmx_target["targetId"]})
+                            await client.send("Target.closeTarget", {"targetId": r["targetId"]})
+                            return {"status": "success", "otp_url": otp_url, "mail_id": mail_id,
+                                    "execution_time": f"{time.time() - start_time:.2f}s"}
+                        await client.send("Target.closeTarget", {"targetId": gmx_target["targetId"]})
                 await client.send("Target.closeTarget", {"targetId": r["targetId"]})
                 logger.info(f"Keine OTP-Email, warte {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
