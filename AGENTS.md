@@ -1663,4 +1663,101 @@ ODER: CDP evaluate für DOM Text
 
 ---
 
+## 🚀 STANDALONE GMX ALIAS API (2026-05-12)
+
+GMX Alias-Operationen sind in ein separates Repo ausgelagert:
+**`github.com/SIN-Rotator/gmx-alias-tool`**
+
+### Architektur
+
+```
+SINator-fireworksai (Port 8000)          gmx-alias-tool (Port 8001)
+├── /rotation/full                       ├── /alias/rotate
+│   ├── gmx_alias_tool.py subprocess     ├── /alias/delete  
+│   └── Fireworks register()             ├── /alias/create
+└── /fireworks/*                         └── /session/check
+                                         └── ./start.sh → Cloudflare Tunnel
+```
+
+### Start
+
+```bash
+cd ~/dev/gmx-alias-tool
+./start.sh          # Server (8001) + Cloudflare Tunnel
+# → http://localhost:8001  (lokal)
+# → https://xxx.trycloudflare.com  (remote für Agenten)
+```
+
+### API-Endpoints
+
+| POST | `/alias/rotate` | `{"alias_name": "name-123"}` → `{"status":"success", "alias_email":"name-123@gmx.de"}` |
+| POST | `/alias/delete` | → `{"status":"success", "deleted":true, "alias":"old@gmx.de"}` |
+| POST | `/alias/create` | `{"alias_name":"name-123"}` → `{"status":"success", "alias_email":"name-123@gmx.de"}` |
+
+### SINator Integration
+
+SINator ruft `gmx_alias_tool.py rotate` als Subprozess für Alias-Rotation. Bei Fehlschlag (CUA-Delete-Dialog nicht gefunden) wird existierender Alias via `/alias/delete` ermittelt und verwendet.
+
+---
+
+## ✅ OTP VERIFY URL EXTRACTION — FIXED (2026-05-12, Issue #16)
+
+### Problem
+
+Extension fand Email und öffnete sie, aber die Verify-URL wurde nicht extrahiert.
+Grund: GMX öffnet Email-Inhalt in einem **mailbody-ui.de OOPIF** (separater CDP-Target).
+Der alte Code suchte nach `#thirdPartyFrame_mail` Iframe und navigierte falsch.
+
+### Fix in `_read_otp_via_extension()` (gmx_service.py)
+
+```
+1. Extension findet Email (data-email-id)
+2. Snapshot: existing target IDs VOR dem Klick
+3. Klick auf Email → neuer GMX Tab öffnet sich
+4. Target.getTargets → mailbody-ui.de OOPIF finden
+5. OOPIF attachen → document.body.innerText lesen
+6. Regex: https?://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify)[^\s\"\'<>]+
+7. Verify-URL extrahiert!
+```
+
+### Verify-URL Format
+```
+https://app.fireworks.ai/signup/confirm?client_id=sueas7prsfrdp16nantbeqcjv&user_name=...&confirmation_code=...
+```
+
+### Öffnen via Target.createTarget
+Phase 7 öffnet die URL in einem NEUEN Tab (`Target.createTarget`).
+Fireworks bestätigt den Account server-seitig (GET mit Query-Parametern).
+Danach Phase 8: Login mit Email/Passwort.
+
+---
+
+## ⚠️ BEKANNTE PROBLEME (2026-05-12)
+
+### GMX Alias Delete Dialog (CUA)
+
+| Problem | Status |
+|---------|--------|
+| CUA findet OK-Button im Delete-Dialog nicht immer | Intermittent, abhängig von Chrome-Fenster-Fokus |
+| Workaround: `gmx_alias_tool.py rotate` returnt `partial` → existierenden Alias weiterverwenden |
+| SINator fallback: `/alias/delete` API-Call → `alias`-Feld als current alias nutzen |
+
+### _verify_alias_in_iframe Timeout
+
+| Problem | Status |
+|---------|--------|
+| Nach "Hinzufügen"-Klick erscheint Alias nicht sofort im DOM | Fix: full refresh cycle (www.gmx.net → mail_settings) |
+| `innerHTML` statt `innerText` für robustere Suche | Fixed 2026-05-12 |
+
+### Page-State nach CUA-Delete
+
+| Problem | Status |
+|---------|--------|
+| CUA-Delete hinterlässt korrupten Page-State | Fixed: separate CDP-Verbindungen für delete + create |
+| `_connect_to_browser` findet stale Target | Fixed: `reversed(targets)` — neuestes Target zuerst |
+
+---
+
+**Letzte Aktualisierung: 2026-05-12 (OTP Fix + Standalone API + Alias Rotation fixes)**
+
 *Alle Learnings in command_registry.json und Code-Dokumentation.*
