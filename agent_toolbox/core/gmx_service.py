@@ -135,8 +135,7 @@ class GmxService:
         ws_url = await get_browser_ws_endpoint(cdp_port)
         client = CDPClient(ws_url)
         await client.connect()
-        
-        # Finde das GMX Tab spezifisch — nicht einfach das erste Page-Target
+
         targets = await client.get_targets()
         target = None
 

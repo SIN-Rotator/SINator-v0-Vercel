@@ -70,20 +70,42 @@ async def _get_current_alias() -> Optional[str]:
 
 
 async def _fresh_rotate_alias(alias_name: Optional[str] = None) -> Dict[str, Any]:
-    """Rotate GMX alias in a fresh Chrome tab for reliable delete+create."""
+    """Rotate GMX alias: öffnet frischen Tab, delegetiert an GmxService.rotate_alias."""
     from agent_toolbox.core.cdp_client import CDPClient, get_browser_ws_endpoint
-    from agent_toolbox.core.gmx_service import GmxService
 
     ws = await get_browser_ws_endpoint(9222)
-    c = CDPClient(ws)
-    await c.connect()
-    r = await c.send("Target.createTarget", {"url": "https://www.gmx.net/"})
-    await c.disconnect()
+    client = CDPClient(ws)
+    await client.connect()
+    r = await client.send("Target.createTarget", {"url": "https://www.gmx.net/"})
+    sid = await client.attach_to_target(r["targetId"])
+    await client.send_to_session(sid, "Page.enable")
+    await client.send_to_session(sid, "Runtime.enable")
+    await asyncio.sleep(5)
+    await client.disconnect()
 
     svc = GmxService()
     svc.email = "opensin@gmx.de"
     svc.password = "ZOE.jerry2024"
-    return await svc.rotate_alias(new_alias_name=alias_name, cdp_port=9222)
+
+    original = svc._connect_to_browser
+    async def _conn(cdp_port):
+        client2 = CDPClient(ws)
+        await client2.connect()
+        targets = await client2.get_targets()
+        for t in reversed(targets):
+            url = t.get("url","")
+            if t.get("type") == "page" and "sid=" in url and "gmx.net" in url:
+                tid = t["targetId"]
+                s = await client2.attach_to_target(tid)
+                await client2.send_to_session(s, "Page.enable")
+                await client2.send_to_session(s, "Runtime.enable")
+                return client2, s, tid
+        raise RuntimeError("Kein GMX Tab")
+
+    svc._connect_to_browser = _conn
+    result = await svc.rotate_alias(new_alias_name=alias_name, cdp_port=9222)
+    svc._connect_to_browser = original
+    return result
 
 
 async def _rotate_alias_via_api(alias_name: Optional[str] = None) -> Dict[str, Any]:
