@@ -424,16 +424,8 @@ class GmxService:
                 logger.info("Bereits auf E-Mail-Adressen Seite")
                 return True
 
-            # If no SID found but page is a GMX page with jsessionid, we're good
-            if not sid:
-                if 'gmx.net' in current_url:
-                    sid = "jsession_ok"  # Dummy — page is already on 3c.gmx.net with session
-                else:
-                    logger.error("Kein SID und kein GMX Tab gefunden")
-                    return False
-
-            # Navigate to GMX homepage only if not already on allEmailAddresses
-            if 'allEmailAddresses' not in current_url:
+            # If already on inbox, don't re-navigate — just CUA from here
+            if 'bap.navigator' not in current_url and 'mail_settings' not in current_url:
                 gmx_url = f"https://www.gmx.net/?sid={sid}" if sid != "jsession_ok" else "https://www.gmx.net"
                 await client.send_to_session(session_id, "Page.navigate", {"url": gmx_url})
                 await asyncio.sleep(5)
@@ -485,21 +477,33 @@ class GmxService:
             if 'E-Mail-Adressen' in trees:
                 return True
 
-            # Step 2: Click E-Mail AXLink to enter accessible inbox
-            el = find_element('E-Mail', 'AXLink')
-            if el and el > 0:
-                logger.info(f"CUA click E-Mail [{el}]")
-                cua_click(el)
-                await asyncio.sleep(5)
-
-                # Step 3: Click Einstellungen button in accessible mailbox
+            # If already on accessible inbox, skip E-Mail click
+            if 'Barrierefreies Postfach' in trees or 'GMX FreeMail' in trees:
+                # Click Einstellungen directly
                 el = find_element('Einstellungen', 'AXButton')
                 if el and el > 0:
                     logger.info(f"CUA click Einstellungen [{el}]")
                     cua_click(el)
                     await asyncio.sleep(5)
+                    if 'E-Mail-Adressen' in get_tree():
+                        logger.info("E-Mail-Adressen Seite erreicht!")
+                        return True
 
-                    # Step 4: Check if we reached E-Mail-Adressen
+            # Step 2: Click E-Mail AXLink (only if not on inbox already)
+            if 'Barrierefreies Postfach' not in trees:
+                el = find_element('E-Mail', 'AXLink')
+                if el and el > 0:
+                    logger.info(f"CUA click E-Mail [{el}]")
+                    cua_click(el)
+                    await asyncio.sleep(5)
+
+            # Step 3: Click Einstellungen button
+            if 'Barrierefreies Postfach' in get_tree():
+                el = find_element('Einstellungen', 'AXButton')
+                if el and el > 0:
+                    logger.info(f"CUA click Einstellungen [{el}]")
+                    cua_click(el)
+                    await asyncio.sleep(5)
                     if 'E-Mail-Adressen' in get_tree():
                         logger.info("E-Mail-Adressen Seite erreicht!")
                         return True
@@ -897,10 +901,106 @@ class GmxService:
             "type": "mouseReleased", "x": btn_x, "y": btn_y, "button": "left", "clickCount": 1,
         })
 
-    async def _create_alias_via_playwright(self, alias_name: str, cdp_port: int = 9222) -> Optional[str]:
-        """Erstellt Alias via Playwright auf der allEmailAddresses Seite.
+    async def _delete_alias_via_playwright(self, alias_email: str, cdp_port: int = 9222) -> bool:
+        """Löscht einen existierenden Alias via Playwright im allEmailAddresses Iframe.
         
-        Voraussetzung: CUA-Navigation hat allEmailAddresses Tab geöffnet.
+        Flow:
+        1. Find mail_settings page + allEmailAddresses iframe
+        2. Mouseover alias email → delete icon erscheint
+        3. Playwright click delete icon
+        4. CUA click OK im Bestätigungsdialog
+        
+        Returns: True bei Erfolg
+        """
+        import subprocess, json, re as _re
+        try:
+            from playwright.async_api import async_playwright
+
+            async with async_playwright() as p:
+                browser = await p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+                pages = browser.contexts[0].pages
+
+                # Find mail_settings page with allEmailAddresses iframe
+                frame = None
+                for pg in pages:
+                    if 'mail_settings' in pg.url:
+                        for f in pg.frames:
+                            if 'allEmailAddresses' in f.url:
+                                frame = f
+                                break
+                        break
+
+                if not frame:
+                    logger.warning("allEmailAddresses iframe nicht gefunden")
+                    return False
+
+                # Step 1: Mouseover alias row → delete icon appears
+                alias_row = frame.locator(f'text={alias_email}').first
+                await alias_row.hover()
+                await asyncio.sleep(1)
+
+                # Step 2: Click delete icon
+                del_icon = frame.locator('[title*="löschen"], [title*="entfernen"]').first
+                if await del_icon.count() == 0:
+                    del_icon = frame.locator('a[title*="Lösch"], [class*="delete"], [class*="remove"]').first
+                await del_icon.click(force=True)  # force — icon erst nach hover sichtbar
+                logger.info(f"Delete icon clicked for {alias_email}")
+                await asyncio.sleep(2)
+
+                # Step 3: CUA click OK in confirmation dialog
+                res = subprocess.run(
+                    ["cua-driver", "call", "list_windows"],
+                    capture_output=True, text=True, timeout=10,
+                    input=json.dumps({"query": "Chrome"})
+                )
+                wd = json.loads(res.stdout)
+                cua_pid = cua_wid = None
+                for w in wd.get('windows', []):
+                    if (w.get('is_on_screen') and w.get('app_name') == 'Google Chrome'
+                            and ('GMX' in w.get('title', '') or 'Einstell' in w.get('title', ''))):
+                        cua_pid = w['pid']; cua_wid = w['window_id']
+                        break
+
+                if cua_pid:
+                    await asyncio.sleep(1)
+                    r = subprocess.run(
+                        ["cua-driver", "call", "get_window_state"],
+                        capture_output=True, text=True, timeout=15,
+                        input=json.dumps({"pid": cua_pid, "window_id": cua_wid})
+                    )
+                    state = json.loads(r.stdout)
+                    for line in state.get('tree_markdown', '').split('\n'):
+                        s = line.strip()
+                        if 'AXButton' in s and '"OK"' in s:
+                            m = _re.search(r'\]?\s*-\s*\[(\d+)\]', s)
+                            if m:
+                                el = int(m.group(1))
+                                logger.info(f"CUA click OK [{el}]")
+                                subprocess.run(
+                                    ["cua-driver", "call", "click"],
+                                    capture_output=True, text=True, timeout=10,
+                                    input=json.dumps({"pid": cua_pid, "window_id": cua_wid, "element_index": el})
+                                )
+                                await asyncio.sleep(3)
+                                break
+
+                # Verify deletion
+                content = await frame.content()
+                if alias_email not in content:
+                    logger.info(f"Playwright: ✅ {alias_email} gelöscht")
+                    return True
+
+                logger.warning(f"Playwright: {alias_email} nicht gelöscht")
+                return False
+
+        except Exception as e:
+            logger.error(f"Playwright delete failed: {e}")
+            return False
+
+    async def _create_alias_via_playwright(self, alias_name: str, cdp_port: int = 9222) -> Optional[str]:
+        """Erstellt Alias via Playwright im allEmailAddresses Iframe.
+        
+        Voraussetzung: CUA-Navigation hat mail_settings Seite mit allEmailAddresses Iframe.
         Returns: alias_email bei Erfolg, None bei Fehler.
         """
         try:
@@ -910,16 +1010,28 @@ class GmxService:
                 browser = await p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
                 pages = browser.contexts[0].pages
 
-                # Find allEmailAddresses tab
-                addr_page = None
+                # Find mail_settings page with allEmailAddresses iframe
+                frame = None
+                addr_url = None
                 for pg in pages:
-                    if 'allEmailAddresses' in pg.url:
-                        addr_page = pg
+                    if 'mail_settings' in pg.url:
+                        for f in pg.frames:
+                            if 'allEmailAddresses' in f.url:
+                                addr_url = f.url
+                                frame = f
+                                break
                         break
 
-                if not addr_page:
-                    logger.warning("allEmailAddresses tab nicht via Playwright gefunden")
+                if not addr_url:
+                    logger.warning("allEmailAddresses iframe nicht via Playwright gefunden")
                     return None
+
+                # Open iframe URL directly for reliable Wicket interaction
+                new_page = await browser.contexts[0].new_page()
+                await new_page.goto(addr_url)
+                await asyncio.sleep(4)
+                logger.info(f"Opened allEmailAddresses directly: {new_page.url[:100]}")
+                addr_page = new_page
 
                 for attempt in range(3):
                     current_alias = alias_name if attempt == 0 else self.generate_alias_name()
@@ -927,7 +1039,7 @@ class GmxService:
                     logger.info(f"Playwright attempt {attempt+1}/3: {current_email}")
 
                     # Fill input
-                    inp = addr_page.locator('input[type="text"], input[name*="localPart"], input[name*="alias"]').first
+                    inp = addr_page.locator('input[type="text"]').first
                     if attempt == 0:
                         await inp.fill(current_alias)
                     else:
@@ -935,37 +1047,28 @@ class GmxService:
                         await inp.fill(current_alias)
                     await asyncio.sleep(0.5)
 
-                    # Click Hinzufügen — der Button ist <button> ohne type="submit" im Form
-                    btn = addr_page.locator('form button:has-text("Hinzufügen")').first
-                    if await btn.count() == 0:
-                        btn = addr_page.locator('button:has-text("Hinzufügen")').first
-                    if await btn.count() == 0:
-                        logger.warning("Hinzufügen button not found")
-                        continue
-                    await btn.click()
+                    # Click Hinzufügen
+                    btn = addr_page.locator('button:has-text("Hinzufügen")').first
+                    await btn.click(force=True)
+                    logger.info(f"Playwright: Hinzufügen clicked")
                     await asyncio.sleep(5)
 
-                    # Verify: input should be cleared after successful creation
+                    # Verify: input cleared = form submitted successfully
                     inp_val = await inp.input_value()
                     if not inp_val:
-                        # Input cleared = form submitted! Check page for confirmation
-                        content = await addr_page.content()
-                        if current_email in content or 'erfolgreich' in content.lower() or 'angelegt' in content.lower():
-                            logger.info(f"Playwright: ✅ {current_email} created")
-                            return current_email
-                        # Input cleared even without confirmation text = likely success
-                        logger.info(f"Playwright: input cleared, assuming {current_email} created")
+                        logger.info(f"Playwright: ✅ {current_email} created")
+                        await addr_page.close()
                         return current_email
 
-                    # Input still has text — try checking if alias appears in page anyway
+                    # Also check page content
                     content = await addr_page.content()
                     if current_email in content:
                         logger.info(f"Playwright: ✅ {current_email} created")
-                        return current_email
-                        logger.info(f"Playwright: ✅ {current_email} created")
+                        await addr_page.close()
                         return current_email
 
-                    logger.warning(f"Playwright: {current_email} not found, retrying...")
+                    logger.warning(f"Playwright: {current_email} not created, retrying...")
+                    await asyncio.sleep(1)
 
                 return None
 
@@ -1081,61 +1184,35 @@ class GmxService:
                 }
             steps_completed.append("navigated_to_addresses")
 
-            # --- STEP 2: Delete existing alias (HYBRID CDP DOM + CUA) ---
-            await client.send_to_session(session_id, "DOM.enable")
-            await asyncio.sleep(0.3)
-
-            alias_info = await self._find_alias_coords_in_iframe(client, session_id)
-            if alias_info:
-                alias_text = alias_info['text']
-                logger.info(f"Alias gefunden: {alias_text} at ({alias_info['x']:.0f},{alias_info['y']:.0f})")
-
-                # CDP HOVER over alias row
-                hover_x = alias_info['x'] + alias_info['w'] / 2
-                hover_y = alias_info['y'] + alias_info['h'] / 2
-                await self._cdp_hover(client, session_id, hover_x, hover_y)
-                await asyncio.sleep(1)
-
-                # Find delete icon (now visible after hover)
-                delete_info = await self._find_delete_icon_coords(client, session_id)
-                if delete_info:
-                    await self._cdp_click(client, session_id, delete_info['x'], delete_info['y'])
-                    await asyncio.sleep(3)
-
-                    # CUA click OK button
-                    import subprocess as sp
-                    res = sp.run(
-                        ["cua-driver", "call", "list_windows"],
-                        input=json.dumps({"query": "Chrome"}),
-                        capture_output=True, text=True, timeout=10
-                    )
-                    try:
-                        wd = json.loads(res.stdout)
-                        cua_pid, cua_wid = None, None
-                        for w in wd.get('windows', []):
-                            if 'GMX' in w.get('title', '') and w.get('is_on_screen'):
-                                cua_pid = w['pid']; cua_wid = w['window_id']
+            # --- STEP 2: Delete existing alias (Playwright + CUA) ---
+            # CUA navigation has loaded allEmailAddresses in mail_settings iframe
+            # Check page for existing aliases via Playwright
+            from playwright.async_api import async_playwright as _ap
+            _deleted = False
+            async with _ap() as _p:
+                _b = await _p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+                for _pg in _b.contexts[0].pages:
+                    if 'mail_settings' in _pg.url:
+                        for _f in _pg.frames:
+                            if 'allEmailAddresses' in _f.url:
+                                _content = await _f.content()
+                                import re
+                                _emails = re.findall(r'[\w-]+@gmx\.d[et]', _content)
+                                for _e in _emails:
+                                    if 'opensil' not in _e:
+                                        alias_to_delete = _e
+                                        logger.info(f"Delete Alias: {alias_to_delete}")
+                                        _deleted = await self._delete_alias_via_playwright(alias_to_delete, cdp_port)
+                                        if _deleted:
+                                            deleted_alias = alias_to_delete
+                                            steps_completed.append("alias_deleted")
+                                        await asyncio.sleep(2)
+                                        break
                                 break
-                        if cua_pid and cua_wid:
-                            ok = await self._cua_click_ok_button(cua_pid, cua_wid)
-                            if ok:
-                                await asyncio.sleep(3)
-                                # Verify: search again to confirm deletion
-                                alias_check = await self._find_alias_coords_in_iframe(client, session_id)
-                                if alias_check and alias_check['text'] == alias_text:
-                                    steps_failed.append("alias_delete_verify")
-                                else:
-                                    deleted_alias = alias_text
-                                    steps_completed.append("alias_deleted")
-                            else:
-                                steps_failed.append("confirm_button_not_found")
-                        else:
-                            steps_failed.append("cua_window_not_found")
-                    except Exception:
-                        steps_failed.append("cua_confirm_error")
-                else:
-                    steps_failed.append("trash_icon_not_found")
-            else:
+                        break
+                _ = await _b.close() if hasattr(_b, 'close') else None
+            
+            if not _deleted:
                 steps_completed.append("no_existing_alias")
                 deleted_alias = None
 
