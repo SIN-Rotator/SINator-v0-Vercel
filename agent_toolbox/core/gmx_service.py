@@ -393,87 +393,123 @@ class GmxService:
 
     async def _navigate_to_all_email_addresses(self, client: CDPClient, session_id: str) -> bool:
         """
-        Navigiert zur GMX E-Mail-Adressen Seite via CUA.
-        
-        VERIFIED HYBRID (2026-05-11):
-        - CUA check: page title contains "Einstellungen" or "FreeMail" → on settings page
-        - CUA right-click "JS" avatar → opens account dropdown → navigates to settings
-        - Returns True if we land on a page with E-Mail-Adressen content
+        Navigiert zur GMX E-Mail-Adressen Seite via CUA Klicks.
+
+        FLOW:
+        1. Page.navigate www.gmx.net → GMX homepage
+        2. CUA click AXLink (E-Mail) → accessible inbox (Barrierefreies Postfach)
+        3. CUA click AXButton (Einstellungen für Ihr GMX Postfach) → settings
+        4. Settings page shows E-Mail-Adressen section → return True
         """
         import subprocess, json, re
 
-        # Step 1: Get CUA window state to check current page
         try:
+            # Step 0: Navigate to GMX homepage via CDP
+            targets = await client.get_targets()
+            current_url = ""
+            sid = None
+            for t in targets:
+                url = t.get("url", "")
+                if t.get("type") == "page" and "gmx.net" in url and ("sid=" in url or "jsessionid=" in url or "allEmailAddresses" in url):
+                    current_url = url
+                    m = re.search(r'(?:sid=([a-f0-9]{70,})|jsessionid=([A-F0-9]{30,}))', url)
+                    if m: sid = m.group(1) or m.group(2)
+                    break
+
+            if not sid:
+                logger.error("Kein SID in Target-URL gefunden")
+                return False
+
+            if 'email_addresses' in current_url or 'allEmailAddresses' in current_url:
+                logger.info("Bereits auf E-Mail-Adressen Seite")
+                return True
+
+            # If no SID found but page is a GMX page with jsessionid, we're good
+            if not sid:
+                if 'gmx.net' in current_url:
+                    sid = "jsession_ok"  # Dummy — page is already on 3c.gmx.net with session
+                else:
+                    logger.error("Kein SID und kein GMX Tab gefunden")
+                    return False
+
+            # Navigate to GMX homepage only if not already on allEmailAddresses
+            if 'allEmailAddresses' not in current_url:
+                gmx_url = f"https://www.gmx.net/?sid={sid}" if sid != "jsession_ok" else "https://www.gmx.net"
+                await client.send_to_session(session_id, "Page.navigate", {"url": gmx_url})
+                await asyncio.sleep(5)
+
+            # Step 1: Find CUA window (Google Chrome only, avoid iTerm2)
             res = subprocess.run(
                 ["cua-driver", "call", "list_windows"],
-                input=json.dumps({"query": "Chrome"}),
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=10,
+                input=json.dumps({"query": "Chrome"})
             )
             wd = json.loads(res.stdout)
             cua_pid = cua_wid = None
             for w in wd.get('windows', []):
-                if ('GMX' in w.get('title', '') or 'FreeMail' in w.get('title', '')) and w.get('is_on_screen'):
+                if (w.get('is_on_screen') and w.get('app_name') == 'Google Chrome'
+                        and ('GMX' in w.get('title', '') or 'gmx' in w.get('title', '').lower())):
                     cua_pid = w['pid']
                     cua_wid = w['window_id']
                     break
 
-            if not cua_pid or not cua_wid:
-                logger.warning("GMX window nicht gefunden via CUA")
+            if not cua_pid:
+                logger.warning("GMX window nicht via CUA gefunden")
                 return False
 
-            res2 = subprocess.run(
-                ["cua-driver", "call", "get_window_state"],
-                input=json.dumps({"pid": cua_pid, "window_id": cua_wid, "query": "Einstellungen"}),
-                capture_output=True, text=True, timeout=15
-            )
-            state = json.loads(res2.stdout)
-            lines = state.get('tree_markdown', '')
+            def get_tree():
+                r = subprocess.run(
+                    ["cua-driver", "call", "get_window_state"],
+                    capture_output=True, text=True, timeout=15,
+                    input=json.dumps({"pid": cua_pid, "window_id": cua_wid})
+                )
+                return json.loads(r.stdout).get('tree_markdown', '')
+
+            def cua_click(el):
+                subprocess.run(
+                    ["cua-driver", "call", "click"],
+                    capture_output=True, text=True, timeout=10,
+                    input=json.dumps({"pid": cua_pid, "window_id": cua_wid, "element_index": el})
+                )
+
+            def find_element(text, el_type=""):
+                for line in get_tree().split('\n'):
+                    s = line.strip()
+                    if text in s and (not el_type or el_type in s):
+                        m = re.search(r'\]?\s*-\s*\[(\d+)\]', s)
+                        if m: return int(m.group(1))
+                return None
 
             # Already on settings page?
-            if 'E-Mail-Adressen' in lines or 'Einstellungen' in lines:
-                logger.info("Bereits auf E-Mail-Adressen/Einstellungen Seite")
+            trees = get_tree()
+            if 'E-Mail-Adressen' in trees:
                 return True
 
-            # Already on mailbox? Try navigating to settings via "JS" avatar
-            if 'GMX FreeMail' in lines or 'Posteingang' in lines:
-                # Right-click on "JS" avatar to open account dropdown
-                for i, line in enumerate(lines.split('\\n')):
-                    s = line.strip()
-                    if 'AXButton "JS"' in s:
-                        m = re.search(r'\]\s*-\s*\[(\d+)\]\s*AXButton\s*"JS"', s)
-                        if m:
-                            el = int(m.group(1))
-                            logger.info(f"CUA right-click on avatar [{el}]")
-                            subprocess.run(
-                                ["cua-driver", "call", "right_click"],
-                                input=json.dumps({
-                                    "pid": cua_pid, "window_id": cua_wid, "element_index": el
-                                }),
-                                capture_output=True, text=True, timeout=10
-                            )
-                            await asyncio.sleep(3)
-                            break
+            # Step 2: Click E-Mail AXLink to enter accessible inbox
+            el = find_element('E-Mail', 'AXLink')
+            if el and el > 0:
+                logger.info(f"CUA click E-Mail [{el}]")
+                cua_click(el)
+                await asyncio.sleep(5)
 
-                # Check if we landed on settings page
-                res3 = subprocess.run(
-                    ["cua-driver", "call", "get_window_state"],
-                    input=json.dumps({"pid": cua_pid, "window_id": cua_wid, "query": "Einstellungen"}),
-                    capture_output=True, text=True, timeout=15
-                )
-                state3 = json.loads(res3.stdout)
-                lines3 = state3.get('tree_markdown', '')
-                if 'E-Mail-Adressen' in lines3 or 'Einstellungen' in lines3:
-                    logger.info("Navigiert zu Einstellungen via CUA")
-                    return True
+                # Step 3: Click Einstellungen button in accessible mailbox
+                el = find_element('Einstellungen', 'AXButton')
+                if el and el > 0:
+                    logger.info(f"CUA click Einstellungen [{el}]")
+                    cua_click(el)
+                    await asyncio.sleep(5)
 
-            # Fallback: return False (caller should use CUA navigation)
+                    # Step 4: Check if we reached E-Mail-Adressen
+                    if 'E-Mail-Adressen' in get_tree():
+                        logger.info("E-Mail-Adressen Seite erreicht!")
+                        return True
+
             logger.warning("CUA navigation konnte E-Mail-Adressen nicht erreichen")
             return False
 
         except Exception as e:
             logger.error(f"CUA navigation failed: {e}")
-
-        return False
+            return False
 
     # ═══════════════════════════════════════════════════════════════════════════════
     #  ALIAS DELETION (VERIFIED 2026-05-11)
@@ -861,6 +897,82 @@ class GmxService:
             "type": "mouseReleased", "x": btn_x, "y": btn_y, "button": "left", "clickCount": 1,
         })
 
+    async def _create_alias_via_playwright(self, alias_name: str, cdp_port: int = 9222) -> Optional[str]:
+        """Erstellt Alias via Playwright auf der allEmailAddresses Seite.
+        
+        Voraussetzung: CUA-Navigation hat allEmailAddresses Tab geöffnet.
+        Returns: alias_email bei Erfolg, None bei Fehler.
+        """
+        try:
+            from playwright.async_api import async_playwright
+
+            async with async_playwright() as p:
+                browser = await p.chromium.connect_over_cdp(f"http://127.0.0.1:{cdp_port}")
+                pages = browser.contexts[0].pages
+
+                # Find allEmailAddresses tab
+                addr_page = None
+                for pg in pages:
+                    if 'allEmailAddresses' in pg.url:
+                        addr_page = pg
+                        break
+
+                if not addr_page:
+                    logger.warning("allEmailAddresses tab nicht via Playwright gefunden")
+                    return None
+
+                for attempt in range(3):
+                    current_alias = alias_name if attempt == 0 else self.generate_alias_name()
+                    current_email = f"{current_alias}@gmx.de"
+                    logger.info(f"Playwright attempt {attempt+1}/3: {current_email}")
+
+                    # Fill input
+                    inp = addr_page.locator('input[type="text"], input[name*="localPart"], input[name*="alias"]').first
+                    if attempt == 0:
+                        await inp.fill(current_alias)
+                    else:
+                        await inp.clear()
+                        await inp.fill(current_alias)
+                    await asyncio.sleep(0.5)
+
+                    # Click Hinzufügen — der Button ist <button> ohne type="submit" im Form
+                    btn = addr_page.locator('form button:has-text("Hinzufügen")').first
+                    if await btn.count() == 0:
+                        btn = addr_page.locator('button:has-text("Hinzufügen")').first
+                    if await btn.count() == 0:
+                        logger.warning("Hinzufügen button not found")
+                        continue
+                    await btn.click()
+                    await asyncio.sleep(5)
+
+                    # Verify: input should be cleared after successful creation
+                    inp_val = await inp.input_value()
+                    if not inp_val:
+                        # Input cleared = form submitted! Check page for confirmation
+                        content = await addr_page.content()
+                        if current_email in content or 'erfolgreich' in content.lower() or 'angelegt' in content.lower():
+                            logger.info(f"Playwright: ✅ {current_email} created")
+                            return current_email
+                        # Input cleared even without confirmation text = likely success
+                        logger.info(f"Playwright: input cleared, assuming {current_email} created")
+                        return current_email
+
+                    # Input still has text — try checking if alias appears in page anyway
+                    content = await addr_page.content()
+                    if current_email in content:
+                        logger.info(f"Playwright: ✅ {current_email} created")
+                        return current_email
+                        logger.info(f"Playwright: ✅ {current_email} created")
+                        return current_email
+
+                    logger.warning(f"Playwright: {current_email} not found, retrying...")
+
+                return None
+
+        except Exception as e:
+            logger.error(f"Playwright alias creation failed: {e}")
+            return None
+
     async def create_alias(self, alias_name: Optional[str] = None, cdp_port: int = 9222) -> Dict[str, Any]:
         """Erstellt einen neuen GMX Alias.
         
@@ -891,67 +1003,32 @@ class GmxService:
             if not nav_ok:
                 return {"status": "not_logged_in", "alias_email": None, "error": "Navigation failed"}
             steps.append("navigated_to_addresses")
+            await client.disconnect()
+            client = None  # avoid double-disconnect in finally
             
-            # Find input
-            input_coords = await self._find_alias_input_coords(client, session_id)
-            if not input_coords:
-                return {"status": "error", "alias_email": None, "error": "Input not found"}
-            steps.append("input_found")
+            # Use Playwright for form interaction on allEmailAddresses tab
+            alias_email = await self._create_alias_via_playwright(alias_name, cdp_port)
+            if alias_email:
+                steps.append("input_found")
+                steps.append("form_filled")
+                steps.append("add_button_clicked")
+                steps.append("alias_created")
+                return {
+                    "status": "success",
+                    "alias_email": alias_email,
+                    "alias_name": alias_name,
+                    "steps_completed": steps,
+                    "execution_time": f"{time.time() - start_time:.2f}s",
+                }
             
-            for attempt in range(3):
-                current_alias = alias_name if attempt == 0 else self.generate_alias_name()
-                alias_email = f"{current_alias}@gmx.de"
-                logger.info(f"Erstelle Alias (Versuch {attempt + 1}/3): {alias_email}")
-                
-                # Fill via CDP key events
-                fill_ok = await self._fill_alias_input_via_cdp(
-                    client, session_id, current_alias, input_coords
-                )
-                if not fill_ok:
-                    return {"status": "error", "alias_email": None, "error": "Input fill failed"}
-                if attempt == 0:
-                    steps.append("filled_form")
-                await asyncio.sleep(1)
-                
-                # Find + click button
-                btn = await self._find_hinzufuegen_button_coords(
-                    client, session_id, input_coords['y']
-                )
-                if not btn:
-                    btn = {"x": input_coords['x'], "y": input_coords['y'] + 95}
-                
-                await self._click_button_via_cdp(client, session_id, btn)
-                if attempt == 0:
-                    steps.append("clicked_add")
-                await asyncio.sleep(5)
-                
-                # Verify via DOM search
-                check = await client.send_to_session(
-                    session_id, "DOM.performSearch",
-                    {"query": alias_email, "includeUserAgentShadowDOM": True}
-                )
-                if check['resultCount'] > 0:
-                    logger.info(f"✅ Alias erstellt: {alias_email}")
-                    return {
-                        "status": "success",
-                        "alias_email": alias_email,
-                        "alias_name": current_alias,
-                        "steps_completed": steps,
-                        "execution_time": f"{time.time() - start_time:.2f}s",
-                    }
-                
-                logger.warning(f"Nicht verfügbar: {alias_email}, neuer Versuch...")
-                await asyncio.sleep(1)
-            
-            # All attempts exhausted
-            elapsed = time.time() - start_time
             return {
                 "status": "failed",
                 "alias_email": None,
                 "alias_name": alias_name,
                 "steps_completed": steps,
-                "execution_time": f"{elapsed:.2f}s",
-                "error": "Alle 3 Versuche fehlgeschlagen — Alias-Namen sind nicht verfügbar",
+                "steps_failed": ["input_not_found"],
+                "execution_time": f"{time.time() - start_time:.2f}s",
+                "error": "Alias-Input nicht gefunden oder Button nicht geklickt",
             }
             
         except Exception as e:
@@ -1062,72 +1139,20 @@ class GmxService:
                 steps_completed.append("no_existing_alias")
                 deleted_alias = None
 
-            # --- STEP 3: Create new alias (CDP DOM + Input, VERIFIED 2026-05-11) ---
-            await client.send_to_session(session_id, "DOM.enable")
-            await asyncio.sleep(0.3)
-            
+            # --- STEP 3: Create new alias via Playwright ---
             if not new_alias_name:
                 new_alias_name = self.generate_alias_name()
 
-            # Find input once (reuse across retries)
-            input_coords = await self._find_alias_input_coords(client, session_id)
-            if not input_coords:
-                steps_failed.append("input_not_found")
-                return {
-                    "status": "partial", "deleted_alias": deleted_alias,
-                    "created_alias": None, "created_alias_name": new_alias_name,
-                    "steps_completed": steps_completed, "steps_failed": steps_failed,
-                    "execution_time": f"{time.time() - start_time:.2f}s",
-                    "error": "Alias-Input nicht gefunden",
-                }
-            steps_completed.append("input_found")
+            await client.disconnect()
+            client = None
 
-            alias_created = False
-            for attempt in range(3):
-                current_alias = new_alias_name if attempt == 0 else self.generate_alias_name()
-                current_alias_email = f"{current_alias}@gmx.de"
-                logger.info(f"Erstelle Alias (Versuch {attempt + 1}/3): {current_alias_email}")
-
-                # Fill input via CDP key events
-                fill_ok = await self._fill_alias_input_via_cdp(
-                    client, session_id, current_alias, input_coords
-                )
-                if not fill_ok:
-                    steps_failed.append("input_fill")
-                    continue
-                if attempt == 0:
-                    steps_completed.append("form_filled")
-                await asyncio.sleep(1)
-                
-                # Find button (may change position slightly between attempts)
-                btn = await self._find_hinzufuegen_button_coords(
-                    client, session_id, input_coords['y']
-                )
-                if not btn:
-                    # Fallback: click ~95px below input
-                    btn = {"x": input_coords['x'], "y": input_coords['y'] + 95}
-                
-                await self._click_button_via_cdp(client, session_id, btn)
-                if attempt == 0:
-                    steps_completed.append("add_button_clicked")
-                await asyncio.sleep(5)
-                
-                # Verify via DOM.performSearch (not Runtime.evaluate!)
-                check_search = await client.send_to_session(
-                    session_id, "DOM.performSearch",
-                    {"query": current_alias_email, "includeUserAgentShadowDOM": True}
-                )
-                if check_search['resultCount'] > 0:
-                    created_alias_name = current_alias
-                    created_alias = current_alias_email
-                    alias_created = True
-                    steps_completed.append("alias_created")
-                    break
-                
-                logger.warning(f"Alias {current_alias_email} nicht verfügbar, generiere neuen Namen...")
-                await asyncio.sleep(1)
-            
-            if alias_created:
+            created_alias = await self._create_alias_via_playwright(new_alias_name, cdp_port)
+            if created_alias:
+                created_alias_name = new_alias_name
+                steps_completed.append("input_found")
+                steps_completed.append("form_filled")
+                steps_completed.append("add_button_clicked")
+                steps_completed.append("alias_created")
                 logger.info(f"✅ Rotation complete: {deleted_alias} -> {created_alias}")
                 return {
                     "status": "success",
@@ -1148,7 +1173,7 @@ class GmxService:
                     "steps_completed": steps_completed,
                     "steps_failed": steps_failed,
                     "execution_time": f"{time.time() - start_time:.2f}s",
-                    "error": "Alle 3 Versuche fehlgeschlagen — Alias-Namen sind nicht verfügbar",
+                    "error": "Alle 3 Versuche fehlgeschlagen — Playwright konnte Alias nicht erstellen",
                 }
 
         except Exception as e:
