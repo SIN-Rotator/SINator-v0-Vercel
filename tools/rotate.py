@@ -38,37 +38,16 @@ async def main():
     from playwright.async_api import async_playwright as _ap
     async with _ap() as _p:
         _b = await _p.chromium.connect_over_cdp("http://127.0.0.1:9222")
-        _page = _b.contexts[0].pages[0]
-        await _page.goto("https://www.gmx.net/")
-        await asyncio.sleep(3)
-        
-        # Try E-Mail click first (if session exists)
-        try:
-            await _page.get_by_role("link", name="E-Mail", exact=True).first.click(timeout=5000)
-            await asyncio.sleep(5)
-            if 'navigator' in _page.url and 'sid=' in _page.url:
-                logger.info("✅ GMX Session OK (cookie-based)")
-        except:
-            # Full login
-            logger.info("GMX Login needed...")
-            await _page.goto("https://www.gmx.net/mail/login")
-            await asyncio.sleep(5)
-            for inp in await _page.locator('input').all():
-                t = await inp.get_attribute('type') or ''
-                if t == 'email': 
-                    await inp.fill("opensin@gmx.de")
-                    break
-            for btn in await _page.locator('button:has-text("Weiter")').all():
-                await btn.click(); await asyncio.sleep(5); break
-            for inp in await _page.locator('input').all():
-                t = await inp.get_attribute('type') or ''
-                if t == 'password':
-                    await inp.fill("ZOE.jerry2024")
-                    break
-            for btn in await _page.locator('button:has-text("Login")').all():
-                await btn.click(); await asyncio.sleep(6); break
-            if 'sid=' in _page.url:
-                logger.info("✅ GMX Login OK")
+        for _pg in _b.contexts[0].pages:
+            if 'gmx' in _pg.url.lower():
+                await _pg.goto("https://www.gmx.net/")
+                await asyncio.sleep(3)
+                # Click E-Mail header link
+                await _pg.locator('a:has-text("E-Mail")').first.click(timeout=5000)
+                await asyncio.sleep(5)
+                if 'sid=' in _pg.url:
+                    logger.info("✅ GMX Session active")
+                break
 
     # ═══ Step 1: GMX Alias Rotation ═══
     logger.info("=== GMX Alias Rotation ===")
