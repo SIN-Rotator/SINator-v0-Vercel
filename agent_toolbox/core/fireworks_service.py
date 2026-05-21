@@ -161,7 +161,7 @@ async def login_fireworks(email: str, password: str) -> Dict[str, Any]:
                     capture_output=True, text=True, timeout=10,
                     input=json.dumps({"query": "Chrome"}))
                 for w in json.loads(res.stdout).get('windows', []):
-                    if 'Google Chrome' == w.get('app_name', '') and w.get('is_on_screen') and 'Fireworks' in w.get('title', ''):
+                    if 'Google Chrome' == w.get('app_name', '') and w.get('is_on_screen') and 'fireworks' in w.get('title', '').lower():
                         pid, wid = w['pid'], w['window_id']
                         # Names
                         for el_idx, name in [(124, "Super"), (128, "Cheetah")]:
