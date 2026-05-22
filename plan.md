@@ -124,19 +124,23 @@ rtk test pytest tests/ -v
 
 ---
 
-## 🔴 PRIORITÄT 4 — gmx-alias-tool API Konsolidierung
+## ✅ PRIORITÄT 4 — gmx-alias-tool API Konsolidierung (DONE)
 
-### Problem
-`agent_toolbox/api/routes/rotation.py` ruft `GmxService.rotate_alias()` direkt auf (localhost). `gmx-alias-tool` (Port 8001) hat den gleichen Code. Dublette.
+### Was wurde gemacht (2026-05-22)
 
-### Fix-Plan
-- [ ] `rotation.py` → httpx-Aufruf an `http://localhost:8001/alias/rotate` statt direktem Service-Call
-- [ ] `gmx-alias-tool` update: Playwright+CUA Code vollständig übernommen (teilweise noch CDP legacy)
-- [ ] Fallback: wenn API offline → direkt `GmxService` nutzen
+| Änderung | Repo | Beschreibung |
+|----------|------|-------------|
+| `rotation.py` → httpx API + Fallback | SINator | `_gmx_rotate_via_api()` ruft `localhost:8001/alias/rotate`, `_gmx_rotate_fallback()` direkt via GmxService |
+| `_fireworks_login` delegiert | SINator | Ruft `fireworks_service.login_fireworks()` statt CUA-hardcoded Indizes |
+| `_fireworks_api_key` delegiert | SINator | Ruft `fireworks_service.create_api_key()` (V6 disabled-wait + polling) |
+| `cdp_client.py` gelöscht | gmx-alias-tool | 900 Zeilen CDP Legacy entfernt (unused von gmx_service) |
+| `server.py` vereinfacht | gmx-alias-tool | `_get_fresh_gmx_tab()` → `_get_svc()`, health via urllib |
+| sys.path setup | gmx-alias-tool | SINator-Pfad für `agent_toolbox.core` imports |
+| Version | gmx-alias-tool | bumped to 2.0.0 |
 
-### Files
-- `agent_toolbox/api/routes/rotation.py` — HTTP statt direkt
-- `/Users/jeremy/dev/gmx-alias-tool/app.py` — Legacy CDP Code entfernen
+### Files geändert
+- `agent_toolbox/api/routes/rotation.py` — 57 insertions, 132 deletions
+- `server.py` (gmx-alias-tool) — `cdp_client.py` removed + routes vereinfacht
 
 ---
 
@@ -148,7 +152,7 @@ rtk test pytest tests/ -v
 | 2 | E2E Regressionstests | 2h | 🟡 Mittel | ✅ **16 Tests, alle pass** |
 | 2b | GMX CUA-Tests in pytest | — | ❌ | ❌ **Nicht testbar** (CUA braucht echten Chrome) |
 | 3 | 3 Fragile Punkte stabilisieren | 3h | 🔴 Hoch | ✅ **DONE** |
-| 4 | gmx-alias-tool API Konsolidierung | 1h | 🟢 Niedrig | ⏳ |
+| 4 | gmx-alias-tool API Konsolidierung | 1h | 🟢 Niedrig | ✅ **DONE** |
 
 ---
 
