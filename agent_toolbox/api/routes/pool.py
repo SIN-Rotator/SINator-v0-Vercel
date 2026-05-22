@@ -7,6 +7,7 @@
 ║  GET  /pool/stats        → API-Key-Pool Status                              ║
 ║  POST /pool/add          → API-Key zum Pool hinzufügen                      ║
 ║  POST /pool/use          → API-Key als verwendet markieren                  ║
+║  GET  /pool/key          → Nächsten verfügbaren API-Key (Klartext)          ║
 ║  DELETE /pool/{key_id}   → API-Key aus Pool löschen                         ║
 ║                                                                              ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -104,6 +105,23 @@ async def mark_key_used(key_id: str):
         elapsed = time.time() - start_time
         logger.error(f"Key-Markierung fehlgeschlagen: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/key")
+async def get_api_key():
+    """
+    Liefert den nächsten verfügbaren API-Key im Klartext (für Chat/LLM).
+    """
+    pool_mgr = get_pool_manager()
+    key = pool_mgr.get_available_key()
+    if not key:
+        raise HTTPException(status_code=404, detail="No available API keys")
+    return {
+        "status": "success",
+        "api_key": key.get("api_key"),
+        "key_id": key.get("id"),
+        "alias_email": key.get("alias_email"),
+    }
 
 
 @router.delete("/{key_id}")
