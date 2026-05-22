@@ -35,12 +35,20 @@ GMX Rotation (19.8s) → Fireworks Signup → GMX Email Verify → Login
 - React-Checkbox: Playwright `check()` + JS `click()` ignoriert → NUR CUA `AXPress`
 - Cookie-Banner MUSS vor Form-Suche dismissed werden
 - Onboarding-Reihenfolge: ALLE Felder zuerst → DANN Terms-CB → DANN Continue
+- Continue redirects to login after onboarding → must login again
 - API Keys URL: `/settings/users/api-keys` (nicht `/settings/workspace/api-keys`)
 - `text=CREATE` matched Cookie-Banner — spezifischere Selektoren!
 - IAC: Direkte Navigation zu 3c.gmx.net URLs trigger Anti-Automation
+- `_re` import muss in JEDER Funktion sein (nicht nur global)
+- CUA Names: "First"+"Last" suchen, NICHT "Name" (matched Company Name zuerst!)
+- CUA element indices sind LABILE → immer text-based scan
+- `pkill -9 -f "Google Chrome"` killt User Chrome → SIGTERM via `kill`
 
 ### Banned Approaches
 - CDP `DOM.performSearch` + `getBoxModel` (nodeId=0 in cross-origin iframes)
 - Playwright `check()` auf React-Checkbox ("did not change state")
+- JS `.click()` auf React-Button (dispatchEvent ignoriert)
 - Direct URL navigation to `3c.gmx.net` → IAC restart
 - `macos-use` Agent (tool validation bug)
+- Hardcodierte CUA element_index (React re-renders ändern alles)
+- CUA `"Name"` statt `"First"+"Last"` (matcht Company Name zuerst)

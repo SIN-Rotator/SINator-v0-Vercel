@@ -9,17 +9,17 @@
 **Full automated flow in ONE command:**
 ```bash
 python tools/rotate.py
-# → GMX Alias (28s) → Fireworks Signup → OTP → Verify
-# → Login → Onboarding → Use-Cases → $5 → API Key → Pool
+# → GMX Alias Rotation (~28s) → Fireworks Signup → OTP → Verify
+# → Login → Onboarding → Use-Cases → $5 Credits → API Key → Pool
 ```
 
-**API Key Pool (4 keys):**
-| Key | Alias |
-|-----|-------|
-| `fw_MdM6tGucgWuuc7zQyJGeTK` | crystal-beetle-676 |
-| `fw_13zisuhmRLAtfZknN7EJ8v` | super-cheetah-687 |
-| `fw_8d1PLFjvQMdgJFzjDZSTRx` | super-cheetah-687 |
-| `fw_4SyZoeCFsyn5L4hpT63LGV` | blaze-scorpion-746 |
+**API Key Pool (4 keys, 3 available):**
+| Key | Alias | Status |
+|-----|-------|--------|
+| `fw_MdM6tGucgWuuc7zQyJGeTK` | crystal-beetle-676 | ✅ Available |
+| `fw_13zisuhmRLAtfZknN7EJ8v` | super-cheetah-687 | ✅ Available |
+| `fw_8d1PLFjvQMdgJFzjDZSTRx` | super-cheetah-687 | ✅ Available |
+| `fw_4SyZoeCFsyn5L4hpT63LGV` | blaze-scorpion-746 | ❌ Used |
 
 ### Alias löschen (Playwright im Iframe + CUA OK)
 ```python
@@ -224,13 +224,12 @@ curl -X POST http://localhost:8000/gmx/alias/rotate \
 ```
 Chrome Binary:     /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 User Data Dir:     /Users/jeremy/Library/Application Support/Google Chrome
-Profile:           Profile 901 ("SINator (Fireworks AI)")
+Profile:           Profile 901
 CDP Port:          9222
 ```
 
 **Chrome Start:**
 ```bash
-kill $(ps aux | grep "[c]hrome.*user-data-dir" | awk '{print $2}' | head -1)
 nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --user-data-dir="/Users/jeremy/Library/Application Support/Google Chrome" \
   --profile-directory="Profile 901" \
@@ -243,6 +242,8 @@ sleep 6 && curl -s http://127.0.0.1:9222/json/version
 **⚠️ NIEMALS `--force-renderer-accessibility` verwenden!**
 - MIT Flag: GMX zeigt "Barrierefreies Postfach" (Email-Rows NICHT klickbar!)
 - OHNE Flag: GMX funktioniert normal + CUA-Driver AX-Tree funktioniert trotzdem
+
+**⚠️ NIEMALS `pkill -9 -f "Google Chrome"`!** Killt User-Chrome → Session tot. Nur SIGTERM via `kill`!
 
 ---
 
@@ -345,12 +346,4 @@ CDP_PORT=9222
 
 ---
 
-## Command Registry
-
-Siehe: `agent_toolbox/command_registry.json`
-
-Enthält alle Commands mit Pre-Flight Check Anweisungen und Learnings.
-
----
-
-*Letzte Aktualisierung: 2026-05-11*
+*Letzte Aktualisierung: 2026-05-22*

@@ -4,6 +4,24 @@
 
 ---
 
+## 🛑 BANNED: E2E Flow (2026-05-22)
+
+| ❌ Verboten | Grund |
+|------------|-------|
+| GMX Rotation OHNE vorherigen Logout-Check | Redirect zu Account-Home statt Signup-Form |
+| CUA `"Name"` statt `"First"` + `"Last"` | Matcht Company Name zuerst → falsches Feld |
+| Hardcodierte CUA-Indizes (129, 137, etc.) | React re-rendered → Indizes ändern sich |
+| `_re` Import NUR global | Wird in inner function scope nicht gefunden |
+| Playwright `check()` auf React-Checkbox | "Clicking did not change state" |
+| JS `.click()` auf React-Button | React controlled components ignorieren dispatchEvent |
+| `input[type="email"]` auf Fireworks | Input hat KEIN type-Attribut → `input[name="email"]` |
+| `/settings/workspace/api-keys` | 404 → `/settings/users/api-keys` |
+| `text=CREATE` als Button-Selector | Matcht Cookie-Banner |
+| Direkte Navigation zu 3c.gmx.net | Triggert IAC restart |
+| `pkill -9 -f "Google Chrome"` | Killt User-Chrome → Profil-Lock → Session tot |
+
+---
+
 ## 🛑 BANNED: OTP/Email-Lesung (2026-05-12)
 
 **GMX MailCheck Extension ist DER EINZIG ZULÄSSIGE WEG für OTP.**

@@ -1,57 +1,64 @@
 # SINator Knowledge Database — Lessons Learned
 
 > "Once Verified = Read-Only. New code = New file. Learnings → Here."
-> Last verified: 2026-05-21 — COMPLETE FLOW: GMX Rotation → Fireworks → API Key `fw_8d1PLFjvQMdgJFzjDZSTRx`
+> Last verified: 2026-05-22 — COMPLETE FLOW: crystal-beetle-676 → `fw_MdM6tGucgWuuc7zQyJGeTK`
 
-## 🟢 WHAT WORKS
+## 🟢 WHAT WORKS (V5 Playwright+CUA Hybrid)
 
 ### GMX Alias Rotation (19.8s avg, 3/3 verified)
-- **Delete**: `.table_field:has-text(alias)` hover(force=True) → `[title*="löschen"]` click(force=True) → CUA OK
-- **Create**: fill `input[type="text"]` → `button:has-text("Hinzufügen")` click (no force) → verify `inp.input_value() == ''`
-- **Email filter**: `e != 'opensin@gmx.de'` (exact match, NOT substring)
+- **Delete**: Playwright iframe: `.table_field:has-text(alias)` hover(force=True) → `[title*="löschen"]` click(force=True) → CUA OK dialog
+- **Create**: Playwright iframe: fill `input[type="text"]` → `button:has-text("Hinzufügen")` click → verify `inp.input_value() == ''`
+- **Email filter**: `e != 'opensin@gmx.de'` (exact match, NOT substring — fixes `opensil` typo bug)
 - **Nav**: CUA E-Mail AXLink → Einstellungen AXButton → allEmailAddresses iframe in mail_settings
 
-### Fireworks Login
+### Fireworks Login (Playwright)
 - **Login URL**: `/login` → "Email Login" link → `/login/email?redirectURI=`
 - **Email input**: `input[name="email"]` (KEIN `type="email"` Attribut!)
 - **Password**: `input[name="password"]` (mit `type="password"`)
-- **Submit**: Playwright `page.locator('input[name="email"]').fill()` + button click
+- **Submit**: `button[type="submit"]` mit Text "Next"
+
+### Fireworks Signup (Playwright + CUA)
+- **Email**: `input[name="email"]` fill → `button:has-text("Next")`
+- **Password**: 2x `input[type="password"]` → `button:has-text("Create Account")`
+- **OTP Poll**: MailCheck Extension + CDP `Target.getTargets` → `mailbody-ui.de` OOPIF → extract verify URL
+- **Verify**: `verify_account(url)` → opens URL in new tab via Playwright `page.goto()`
 
 ### Fireworks Onboarding (CUA required — React ignores Playwright)
+- **Names**: CUA `type_text` → search "First" + "Last" (NOT "Name" — matches Company Name!)
 - **Terms checkbox**: NUR CUA `AXPress` toggelt React-CB. Playwright `check()` + JS `click()` = IGNORIERT
-- **Names**: CUA `type_text` (Playwright `fill()` = React re-renders and clears)
 - **Order**: ALLE Felder zuerst → DANN Terms-CB → DANN Continue
+- **Continue redirects to login**: Account confirmed → must login again
+- **Use-Cases**: CUA dynamic text-based scan (no hardcoded indices!) → checkboxes + Submit
 
-### Fireworks API Key
+### Fireworks API Key (Playwright)
 - **URL**: `/settings/users/api-keys` (NICHT `/settings/workspace/api-keys`!)
-- **Create button**: `AXPopUpButton "Create API Key"` → force-click → `[role="menuitem"]:has-text("API Key")`
-- **Name**: `input[name*="name"]` → "Generate" button
-- **Extract**: `re.findall(r'fw_[a-zA-Z0-9]{20,}', text)`
+- **Create button**: PopUpButton force-click → `[role="menuitem"]:has-text("API Key")` click
+- **Name**: `input[name*="name"]` fill → "Generate" button click
+- **Extract**: `re.findall(r'fw_[a-zA-Z0-9]{20,}', page.content() + page.evaluate("body.innerText"))`
 
 ### Session Management
-- Click "E-Mail" link on www.gmx.net → redirects to inbox with fresh SID
-- No explicit login needed if session cookie exists
-- `bap.navigator.gmx.net/mail?sid=...` is the working inbox URL
+- **GMX E-Mail click**: `page.locator('a:has-text("E-Mail")').click()` → inbox with SID
+- **Fireworks Logout before Signup**: CDP `Network.deleteCookies` for fireworks domain + `clearBrowserCookies`
+- **IAC close**: `for pg in pages: if 'iac' in pg.url: await pg.close()`
 
-### IAC (GMX Anti-Automation)
-- Close IAC pages via Playwright: `for pg in pages: if 'iac' in pg.url: await pg.close()`
-- Direct URL navigation to `3c.gmx.net` triggers IAC → use CUA navigation instead
-
-## 🔴 WHAT'S BROKEN / BANNED
+## 🔴 BANNED / BROKEN
 
 ### CDP DOM on Cross-Origin Iframes
-- `DOM.performSearch` returns texts but nodeIds are 0 (stale)
-- `DOM.getBoxModel` fails on cross-origin nodes
-- `DOM.getSearchResults` with `toIndex: 1` returns only stale node — use `toIndex: resultCount`
+- `DOM.performSearch` → nodeIds vary between calls, stale
+- `DOM.getBoxModel` → fails on cross-origin nodes in 3c.gmx.net
 
-### React Form Interaction (NICHT mit Playwright)
+### React Interaction (NICHT mit Playwright)
 - Playwright `check()` auf React-Checkbox → "did not change state"
 - JS `.click()` auf React-Button → ignoriert
-- **Lösung**: CUA `AXPress` für React-CB und Buttons
+- **Lösung**: CUA `AXPress` für React-CB + `type_text` für Names
 
-### Hardcoded Coordinates
-- `{"x": 350, "y": 340}` → NIE funktioniert
-- `input_y + 95` für Button → NIE funktioniert
+### Hardcoded CUA element_index
+- React re-renders → ALLE Indizes ändern sich zwischen Scans
+- **Lösung**: IMMER `_find_element(text, el_type)` mit AX-Tree scan
+
+### CUA type_text auf React Email-Inputs
+- React kontrollierte Inputs ignorieren CUA Keyboard Events
+- **Lösung**: Playwright `fill()` für Email/Password (funktioniert über CDP)
 
 ## 📊 TOOL COMPARISON
 
@@ -68,38 +75,31 @@
 
 | Commit | Date | Status |
 |--------|------|--------|
-| `1d3ddf5` (HEAD) | May 21 | ✅ Complete flow: GMX → FW → API Key |
-| `aa9b538` (v3) | May 12 | ⚠️ Partial (CDP-based, broke when GMX enabled accessible mode) |
+| `35cd420` (HEAD) | May 22 | ✅ **LATEST**: crystal-beetle-676 → `fw_MdM6tGucgWuuc7zQyJGeTK` |
+| `1d3ddf5` | May 21 | ✅ Complete flow: GMX → FW → `fw_8d1PLFjvQMdgJFzjDZSTRx` |
+| `aa9b538` (v3) | May 12 | ⚠️ CDP-based, broke when GMX enabled accessible mode |
 | `f61091d` | May 11 | ❌ Broken verify (false positive on stale nodes) |
 
-## ⚡ QUICK REFERENCE
+## 🚀 QUICK REFERENCE
 
 ```bash
-# Start Chrome (temp profile for debugging)
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-sinator --no-first-run &
+# Start Chrome (Profile 901, Port 9222)
+nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="/Users/jeremy/Library/Application Support/Google Chrome" \
+  --profile-directory="Profile 901" \
+  --remote-debugging-port=9222 \
+  --no-first-run --no-default-browser-check \
+  > /tmp/chrome_sinator.log 2>&1 &
 
 # Start CUA
 cua-driver serve &
 
-# GMX Rotation
-python tools/gmx_alias_tool.py rotate
+# Full E2E
+python tools/rotate.py
 
-# Fireworks API Key URL
+# API Key URL
 https://app.fireworks.ai/settings/users/api-keys
+
+# Pool Stats
+curl -s http://localhost:8000/pool/stats | python3 -m json.tool
 ```
-
-## 🟢 COMPLETE E2E FLOW — 2026-05-22
-
-### Verified: crystal-beetle-676@gmx.de → fw_MdM6tGucgWuuc7zQyJGeTK
-
-**Full flow time:** ~2 minutes (28s GMX + ~90s Fireworks)
-
-### Critical Learnings
-- **CUA Names**: Search "First" + "Last" (NOT "Name" — matches Company Name!)
-- **Fireworks Logout before Signup**: CDP `Network.deleteCookies` + `clearBrowserCookies` 
-- **Re-Login after Onboarding Continue**: Continue redirects to login → login again
-- **Use-Case indices change**: Must use dynamic CUA scanning (text-based, not hardcoded)
-- **_re import**: Must be in EVERY function that uses dynamic CUA scanning
-- **GMX Session**: Profile 901 (Jeremy) with `--user-data-dir` + `--profile-directory`
-- **OTP Poll**: MailCheck Extension + CDP Target.getTargets for mailbody-ui.de OOPIF
