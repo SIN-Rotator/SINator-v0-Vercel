@@ -144,19 +144,10 @@ async function loadDashboard() {
     document.getElementById('stat-total').textContent = stats.total || 0;
     document.getElementById('stat-available').textContent = stats.available || 0;
     document.getElementById('stat-used').textContent = stats.used || 0;
+    document.getElementById('stat-credits').textContent = '—';
     renderKeys(stats.keys || []);
   } catch (e) {
     log('Fehler: ' + e.message, 'error');
-  }
-  try {
-    const health = await api('GET', '/pool/health?deep_check=false');
-    document.getElementById('stat-total').textContent = health.total || 0;
-    document.getElementById('stat-available').textContent = health.healthy || 0;
-    document.getElementById('stat-used').textContent = health.suspended || 0;
-    document.getElementById('stat-credits').textContent = '$' + (health.total_credits_remaining || 0).toFixed(1);
-    renderKeys(health.checked || []);
-  } catch (e) {
-    log('Health fehlgeschlagen (ok, schon geladen)', 'info');
   }
 }
 

@@ -238,9 +238,6 @@ async def check_pool_health(deep_check: bool = False):
                     result["status"] = "healthy"
                 elif r.status_code in (401, 402, 403, 412):
                     result["status"] = "suspended"
-                    pool_mgr = get_pool_manager()
-                    pool_mgr.mark_used(key_id)
-                    logger.warning(f"Suspended key marked: {email} ({key_id[:8]})")
                 else:
                     result["status"] = f"error_{r.status_code}"
         except Exception as e:
