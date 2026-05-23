@@ -132,47 +132,73 @@ async def report_bad_key(request: dict):
     Key als verbraucht melden (Rate-Limit/Suspended).
     Markiert den Key als used und liefert einen neuen.
     
-    Body: {"key_id": "xxx"} oder {"api_key": "fw_xxx"}
+    Body: {"api_key": "fw_xxx"} oder {"key_id": "xxx"}
+    
+    Returns:
+      200 + swapped=true + new_key wenn Key gefunden und markiert wurde
+      404 wenn der gemeldete Key nicht im Pool existiert
+      400 wenn kein api_key oder key_id angegeben wurde
     """
     pool_mgr = get_pool_manager()
     key_id = request.get("key_id") or request.get("id")
     api_key = request.get("api_key") or request.get("key")
-    
+
+    if not key_id and not api_key:
+        raise HTTPException(status_code=400, detail="Missing 'api_key' or 'key_id' in request body")
+
+    found_key_id = None
+    found_key_api = None
     if key_id:
-        pool_mgr.mark_used(key_id)
+        # Verifiziere dass key_id existiert
+        for k in pool_mgr.get_stats()["keys"]:
+            if k["id"] == key_id:
+                found_key_id = key_id
+                found_key_api = k.get("api_key", "")
+                break
     elif api_key:
-        # Find key by api_key value
         for k in pool_mgr.get_stats()["keys"]:
             if k.get("api_key") == api_key:
-                pool_mgr.mark_used(k["id"])
+                found_key_id = k["id"]
+                found_key_api = api_key
                 break
-        else:
-            # Try direct file lookup
-            import json
-            pool_data = json.loads(Path("data/fireworksai-pool.json").read_text())
-            for k in pool_data:
+        if not found_key_id:
+            import json as _json
+            for k in _json.loads(Path("data/fireworksai-pool.json").read_text()):
                 if k.get("api_key") == api_key:
-                    pool_mgr.mark_used(k["id"])
+                    found_key_id = k["id"]
+                    found_key_api = api_key
                     break
-    
-    # Return fresh key
+
+    if not found_key_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Key '{api_key or key_id}' not found in pool"
+        )
+
+    pool_mgr.mark_used(found_key_id)
+
     new_key = pool_mgr.get_available_key()
-    if new_key:
-        return {
-            "status": "success",
-            "swapped": True,
-            "new_key": new_key.get("api_key"),
-            "new_key_id": new_key.get("id"),
-            "new_alias": new_key.get("alias_email"),
-        }
-    return {"status": "no_keys_available", "swapped": False}
+    if not new_key:
+        return {"status": "no_keys_available", "swapped": False}
+
+    return {
+        "status": "success",
+        "swapped": True,
+        "new_key": new_key.get("api_key"),
+        "new_key_id": new_key.get("id"),
+        "new_alias": new_key.get("alias_email"),
+    }
 
 
 @router.get("/health")
-async def check_pool_health():
+async def check_pool_health(deep_check: bool = False):
     """
-    Validiert ALLE Pool-Keys via Fireworks API. Markiert gesperrte Keys.
-    Dauert ~2s pro Key (parallele Checks), liest Pool-Datei direkt.
+    Validiert ALLE Pool-Keys via Fireworks API.
+    Markiert gesperrte Keys (401/402/403/412) automatisch als used.
+
+    Query-Parameter:
+      deep_check=false  — nur HTTP-Health-Check (schnell)
+      deep_check=true   — zusätzlich CDP-Billing-Check für aktive Keys (langsam)
     """
     import httpx
     import asyncio
@@ -191,7 +217,12 @@ async def check_pool_health():
         key_id = k.get("id", "?")
         api_key = k.get("api_key", "")
         email = k.get("alias_email", "?")
-        result = {"key_id": key_id, "email": email, "status": "unknown"}
+        result = {
+            "key_id": key_id, "email": email, "status": "unknown",
+            "credits_initial": k.get("credits_initial", 6.0),
+            "credits_remaining": k.get("credits_remaining"),
+            "credits_checked_at": k.get("credits_checked_at"),
+        }
 
         if not api_key:
             result["status"] = "no_key"
@@ -207,7 +238,6 @@ async def check_pool_health():
                     result["status"] = "healthy"
                 elif r.status_code in (401, 402, 403, 412):
                     result["status"] = "suspended"
-                    # Mark as used in pool
                     pool_mgr = get_pool_manager()
                     pool_mgr.mark_used(key_id)
                     logger.warning(f"Suspended key marked: {email} ({key_id[:8]})")
@@ -222,12 +252,14 @@ async def check_pool_health():
     results = await asyncio.gather(*[check_key(k) for k in all_keys])
     healthy = sum(1 for r in results if r["status"] == "healthy")
     suspended = sum(1 for r in results if r["status"] == "suspended")
+    total_credits = sum(r.get("credits_remaining", 0) or 0 for r in results if r.get("credits_remaining"))
 
     return {
         "status": "success",
         "total": len(results),
         "healthy": healthy,
         "suspended": suspended,
+        "total_credits_remaining": round(total_credits, 2),
         "checked": results,
     }
 

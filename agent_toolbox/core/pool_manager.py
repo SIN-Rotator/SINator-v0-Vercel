@@ -77,7 +77,8 @@ class PoolManager:
         except Exception as e:
             logger.error(f"Pool-Speichern fehlgeschlagen: {e}")
 
-    def add_key(self, api_key: str, alias_email: str, key_name: str = "sinator-key") -> Dict[str, Any]:
+    def add_key(self, api_key: str, alias_email: str, key_name: str = "sinator-key",
+                credits_initial: float = 6.0) -> Dict[str, Any]:
         """
         Fügt einen neuen API-Key zum Pool hinzu.
 
@@ -85,6 +86,7 @@ class PoolManager:
             api_key: Fireworks API-Key
             alias_email: Zugehörige GMX Alias-Email
             key_name: Name des Keys
+            credits_initial: Startguthaben in USD (default 6.0 = $6 Free Credits)
 
         Returns:
             Dict mit status und key_id
@@ -97,6 +99,9 @@ class PoolManager:
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "used": False,
             "used_at": None,
+            "credits_initial": credits_initial,
+            "credits_remaining": credits_initial,
+            "credits_checked_at": None,
         }
 
         self.keys.append(key_entry)
@@ -159,6 +164,9 @@ class PoolManager:
                 "created_at": k["created_at"],
                 "used": k.get("used", False),
                 "used_at": k.get("used_at"),
+                "credits_initial": k.get("credits_initial", 6.0),
+                "credits_remaining": k.get("credits_remaining", 6.0),
+                "credits_checked_at": k.get("credits_checked_at"),
             })
 
         return {
@@ -167,6 +175,31 @@ class PoolManager:
             "available": available,
             "keys": keys_list,
         }
+
+    def update_credits(self, key_id: str, credits_remaining: float) -> bool:
+        """
+        Aktualisiert das verbleibende Guthaben eines Keys.
+
+        Args:
+            key_id: ID des Keys
+            credits_remaining: Verbleibendes Guthaben in USD
+
+        Returns:
+            True wenn Key gefunden und aktualisiert
+        """
+        for key in self.keys:
+            if key["id"] == key_id:
+                key["credits_remaining"] = round(credits_remaining, 2)
+                key["credits_checked_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                self.save()
+                logger.info(f"Credits aktualisiert: {key_id[:8]}... = ${credits_remaining:.2f}")
+                if credits_remaining <= 0.01:
+                    key["used"] = True
+                    key["used_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    self.save()
+                    logger.warning(f"Key automatisch als used markiert (0 Credits): {key_id[:8]}...")
+                return True
+        return False
 
     def delete_key(self, key_id: str) -> bool:
         """

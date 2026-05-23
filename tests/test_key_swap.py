@@ -1,11 +1,12 @@
 """
 Tests for auto-key-swap feature: POST /api/v1/pool/report + tools/swap_key.py
 
-Requires: backend running on localhost:8000
-Run: pytest tests/test_key_swap.py -v
+WICHTIG: Erstellt ein Backup des Pools VOR den Tests und stellt es DANACH wieder her.
+NIEMALS echte Pool-Keys verbrauchen!
 """
 import sys
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -15,17 +16,33 @@ sys.path.insert(0, _project_root)
 sys.path.insert(0, _core_dir)
 
 import pytest
-import pytest_asyncio
 import httpx
 import logging
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "http://localhost:8000/api/v1"
+BASE_URL = "http://localhost:3000/api/v1"
 AUTH_FILE = Path.home() / ".local/share/opencode/auth.json"
+POOL_FILE = Path(_project_root) / "data" / "fireworksai-pool.json"
+POOL_BACKUP = POOL_FILE.with_suffix(".json.test_backup")
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────
+# ── Module-Level Backup/Restore ──────────────────────────────────────
+
+def _backup_pool():
+    """Backup the real pool file before tests."""
+    if POOL_FILE.exists():
+        shutil.copy2(POOL_FILE, POOL_BACKUP)
+        print(f"Pool backed up: {POOL_BACKUP}")
+
+
+def _restore_pool():
+    """Restore the real pool file after tests."""
+    if POOL_BACKUP.exists():
+        shutil.copy2(POOL_BACKUP, POOL_FILE)
+        POOL_BACKUP.unlink()
+        print(f"Pool restored from backup")
+
 
 def _get_pool_key():
     """Get an available key from the pool for testing."""
@@ -38,6 +55,14 @@ def _restore_auth(backup):
     if backup:
         AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
         AUTH_FILE.write_text(backup)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def pool_backup():
+    """Backup pool before module, restore after."""
+    _backup_pool()
+    yield
+    _restore_pool()
 
 
 @pytest.fixture
@@ -63,7 +88,7 @@ class TestPoolReport:
         """Report a key by api_key value, get new key back."""
         key_data = _get_pool_key()
         assert key_data, "No keys in pool"
-        
+
         resp = httpx.post(
             f"{BASE_URL}/pool/report",
             json={"api_key": key_data["api_key"]},
@@ -80,7 +105,7 @@ class TestPoolReport:
         """Report a key by key_id, get new key back."""
         key_data = _get_pool_key()
         assert key_data, "No keys in pool"
-        
+
         resp = httpx.post(
             f"{BASE_URL}/pool/report",
             json={"key_id": key_data["key_id"]},
@@ -92,44 +117,42 @@ class TestPoolReport:
         assert data["new_key"] != key_data["api_key"]
 
     def test_report_unknown_key(self):
-        """Reporting a non-existent key still returns a fresh key (best effort)."""
+        """Reporting a non-existent key must return 404."""
         resp = httpx.post(
             f"{BASE_URL}/pool/report",
             json={"api_key": "fw_nonexistent_key_12345"},
             timeout=10,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 404
         data = resp.json()
-        assert "status" in data
-        # Unknown key can't be marked, but we still try to give a new key
-        if data.get("swapped"):
-            assert data["new_key"].startswith("fw_")
+        assert "not found" in data.get("detail", "").lower()
 
     def test_report_empty_body(self):
-        """Empty body should still return a valid response."""
+        """Empty body must return 400."""
         resp = httpx.post(
             f"{BASE_URL}/pool/report",
             json={},
             timeout=10,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
         data = resp.json()
-        assert "status" in data
+        assert "missing" in data.get("detail", "").lower()
 
     def test_report_reported_key_not_in_new(self):
         """Reported key should NOT be the same as the new key returned."""
         key_data = _get_pool_key()
         assert key_data, "No keys in pool"
-        
+
         resp = httpx.post(
             f"{BASE_URL}/pool/report",
             json={"api_key": key_data["api_key"]},
             timeout=10,
         )
+        assert resp.status_code == 200
         data = resp.json()
-        if data["swapped"]:
-            assert data["new_key"] != key_data["api_key"], \
-                "Reported key should not be returned as new key"
+        assert data["swapped"] is True
+        assert data["new_key"] != key_data["api_key"], \
+            "Reported key should not be returned as new key"
 
 
 # ── CLI Tool Tests ────────────────────────────────────────────────────
@@ -141,7 +164,7 @@ class TestSwapKeyCLI:
         """Swap a specific key via CLI argument."""
         key_data = _get_pool_key()
         assert key_data, "No keys in pool"
-        
+
         result = subprocess.run(
             ["python3", "tools/swap_key.py", key_data["api_key"]],
             capture_output=True, text=True, timeout=15,
@@ -155,14 +178,14 @@ class TestSwapKeyCLI:
         """swap_key should update auth.json with the new key."""
         key_data = _get_pool_key()
         assert key_data, "No keys in pool"
-        
+
         result = subprocess.run(
             ["python3", "tools/swap_key.py", key_data["api_key"]],
             capture_output=True, text=True, timeout=15,
             cwd=_project_root,
         )
         assert result.returncode == 0
-        
+
         assert AUTH_FILE.exists(), "auth.json should exist after swap"
         auth = json.loads(AUTH_FILE.read_text())
         assert "fireworks" in auth
@@ -174,7 +197,7 @@ class TestSwapKeyCLI:
         """Check swap_key output contains expected info."""
         key_data = _get_pool_key()
         assert key_data, "No keys in pool"
-        
+
         result = subprocess.run(
             ["python3", "tools/swap_key.py", key_data["api_key"]],
             capture_output=True, text=True, timeout=15,
@@ -196,7 +219,7 @@ class TestIntegration:
         """Report via API, then verify key works and auth file updated."""
         key_data = _get_pool_key()
         assert key_data, "No keys in pool"
-        
+
         # 1. Report key via API
         resp = httpx.post(
             f"{BASE_URL}/pool/report",
@@ -207,7 +230,7 @@ class TestIntegration:
         api_result = resp.json()
         assert api_result["swapped"]
         new_key_api = api_result["new_key"]
-        
+
         # 2. Verify pool stats changed
         stats = httpx.get(f"{BASE_URL}/pool/stats", timeout=10).json()
         assert stats["used"] >= 1

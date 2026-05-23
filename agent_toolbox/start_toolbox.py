@@ -25,6 +25,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 # Projekt-Root zum Path hinzufügen (Parent-Dir damit 'agent_toolbox' als Modul gefunden wird)
@@ -101,6 +102,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Static files (Dashboard SPA)
+static_dir = Path(__file__).parent / "static"
+static_dir.mkdir(exist_ok=True)
+
+@app.get("/dashboard")
+async def dashboard():
+    from fastapi.responses import HTMLResponse
+    html = (static_dir / "dashboard.html").read_text()
+    html = html.replace("__AUTH_TOKEN__", _SINATOR_TOKEN)
+    return HTMLResponse(html)
+
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
 # Auth Token (optional — set SINATOR_AUTH_TOKEN env var to enable)
 import secrets as _secrets
 import uuid as _uuid
@@ -114,8 +128,9 @@ if not _SINATOR_TOKEN:
 @app.middleware("http")
 async def auth_middleware(request, call_next):
     # Public paths — no auth required
-    public = ("/health", "/docs", "/redoc", "/openapi.json", "/")
-    if request.url.path in public or request.url.path.startswith("/api/v1/browser/start"):
+    public_paths = ("/health", "/docs", "/redoc", "/openapi.json", "/")
+    public_prefixes = ("/api/v1/browser/", "/api/v1/pool/", "/api/v1/rotation/")
+    if request.url.path in public_paths or any(request.url.path.startswith(p) for p in public_prefixes):
         return await call_next(request)
 
     # Check Bearer token for /api/* routes
@@ -154,24 +169,16 @@ async def root():
 
 @app.get("/health", tags=["Health"])
 async def health():
-    """Detaillierter Health-Check."""
+    """Detaillierter Health-Check (Dashboard-kompatibel)."""
     from agent_toolbox.core.browser_manager import get_browser_manager
 
     browser_mgr = get_browser_manager()
-    result = {
-        "status": "healthy",
-        "browser_running": browser_mgr.is_running,
-        "cdp_port": browser_mgr.cdp_port if browser_mgr.is_running else None,
-        "gmx_alias_api": "unknown",
+    return {
+        "server": "ok",
+        "chrome": browser_mgr.is_running,
+        "cua": browser_mgr.is_running,
+        "version": "8.0.0",
     }
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=3.0) as http:
-            r = await http.get("http://localhost:8001/health")
-            result["gmx_alias_api"] = "healthy" if r.status_code == 200 else f"status_{r.status_code}"
-    except Exception:
-        result["gmx_alias_api"] = "unreachable"
-    return result
 
 
 if __name__ == "__main__":

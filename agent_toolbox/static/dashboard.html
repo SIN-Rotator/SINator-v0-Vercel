@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SINator Dashboard</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #e2e8f0; padding: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 24px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+    .token-bar { background: #1e293b; padding: 10px 16px; border-radius: 8px; font-family: monospace; font-size: 13px; display: flex; align-items: center; gap: 12px; margin-bottom: 24px; border: 1px solid #334155; }
+    .token-bar .label { color: #94a3b8; white-space: nowrap; }
+    .token-bar .token { color: #a855f7; word-break: break-all; }
+    .token-bar .btn { background: #334155; border: none; color: #e2e8f0; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+    .token-bar .btn:hover { background: #475569; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .stat-card { background: #1e293b; border-radius: 8px; padding: 20px; border: 1px solid #334155; }
+    .stat-card .value { font-size: 32px; font-weight: 700; margin-bottom: 4px; }
+    .stat-card .label { color: #94a3b8; font-size: 14px; }
+    .stat-card.credits .value { color: #22c55e; }
+    .card { background: #1e293b; border-radius: 8px; padding: 20px; border: 1px solid #334155; margin-bottom: 24px; }
+    .card h2 { font-size: 16px; margin-bottom: 12px; color: #94a3b8; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px 12px; color: #64748b; border-bottom: 1px solid #334155; font-weight: 600; }
+    td { padding: 8px 12px; border-bottom: 1px solid #1e293b; }
+    tr:hover td { background: #0f172a40; }
+    .status-healthy { color: #22c55e; }
+    .status-suspended { color: #ef4444; }
+    .status-used { color: #f59e0b; }
+    .key-trunc { font-family: monospace; font-size: 11px; color: #94a3b8; }
+    .log-box { background: #0f172a; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; max-height: 300px; overflow-y: auto; }
+    .log-box div { padding: 2px 0; }
+    .log-box .info { color: #94a3b8; }
+    .log-box .success { color: #22c55e; }
+    .log-box .error { color: #ef4444; }
+    .actions { display: flex; gap: 8px; margin-bottom: 20px; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; background: #7c3aed; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    .btn:hover { background: #6d28d9; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm { font-size: 13px; padding: 6px 12px; }
+    .hidden { display: none !important; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="#a855f7"><rect x="2" y="2" width="8" height="8" rx="2"/><rect x="14" y="2" width="8" height="8" rx="2" fill="#7c3aed"/><rect x="2" y="14" width="8" height="8" rx="2" fill="#6366f1"/><rect x="14" y="14" width="8" height="8" rx="2" fill="#8b5cf6"/></svg>
+    SINator Dashboard
+  </h1>
+
+  <div class="token-bar" id="token-bar">
+    <span class="label">Auth Token:</span>
+    <span class="token" id="auth-token-display">__AUTH_TOKEN__</span>
+    <button class="btn" onclick="copyToken()">Kopieren</button>
+    <button class="btn" onclick="refreshToken()">Neu einlesen</button>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-card"><div class="value" id="stat-total">—</div><div class="label">Total Keys</div></div>
+    <div class="stat-card"><div class="value" id="stat-available">—</div><div class="label">Available</div></div>
+    <div class="stat-card"><div class="value" id="stat-used">—</div><div class="label">Used / Suspended</div></div>
+    <div class="stat-card credits"><div class="value" id="stat-credits">—</div><div class="label">Credits</div></div>
+  </div>
+
+  <div class="actions">
+    <button class="btn" onclick="loadDashboard()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+      Refresh
+    </button>
+    <button class="btn" onclick="runHealthCheck()">Health Check</button>
+    <button class="btn" onclick="startRotation()">Key holen</button>
+  </div>
+
+  <div class="card">
+    <h2>API Keys</h2>
+    <table>
+      <thead><tr><th>Alias</th><th>Status</th><th>Credits</th><th>API Key</th></tr></thead>
+      <tbody id="key-table"><tr><td colspan="4" style="color:#64748b;text-align:center;padding:20px;">Lade...</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Log</h2>
+    <div class="log-box" id="log"><div class="info">Bereit.</div></div>
+  </div>
+
+  <div style="text-align:center;margin-top:32px;color:#64748b;font-size:12px;">
+    <a href="/docs" style="color:#7c3aed;">Swagger UI</a> &middot;
+    <a href="/redoc" style="color:#7c3aed;">ReDoc</a>
+  </div>
+</div>
+
+<script>
+const API = '/api/v1';
+let token = '__AUTH_TOKEN__';
+
+document.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('sinator_token');
+  if (saved) token = saved;
+  document.getElementById('auth-token-display').textContent = token;
+  loadDashboard();
+});
+
+function copyToken() {
+  navigator.clipboard.writeText(token);
+  document.getElementById('log').innerHTML += '<div class="info">Token kopiert.</div>';
+}
+
+function refreshToken() {
+  const t = prompt('Auth Token eingeben:');
+  if (t && t.trim()) {
+    token = t.trim();
+    localStorage.setItem('sinator_token', token);
+    document.getElementById('auth-token-display').textContent = token;
+    loadDashboard();
+  }
+}
+
+async function api(method, path, body) {
+  const r = await fetch(API + path, {
+    method,
+    headers: { 'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  return r.json();
+}
+
+function log(msg, cls = 'info') {
+  const el = document.getElementById('log');
+  const t = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  el.innerHTML += `<div class="${cls}">${t} &middot; ${msg}</div>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+async function loadDashboard() {
+  try {
+    const stats = await api('GET', '/pool/stats');
+    document.getElementById('stat-total').textContent = stats.total || 0;
+    document.getElementById('stat-available').textContent = stats.available || 0;
+    document.getElementById('stat-used').textContent = stats.used || 0;
+    renderKeys(stats.keys || []);
+  } catch (e) {
+    log('Fehler: ' + e.message, 'error');
+  }
+  try {
+    const health = await api('GET', '/pool/health?deep_check=false');
+    document.getElementById('stat-total').textContent = health.total || 0;
+    document.getElementById('stat-available').textContent = health.healthy || 0;
+    document.getElementById('stat-used').textContent = health.suspended || 0;
+    document.getElementById('stat-credits').textContent = '$' + (health.total_credits_remaining || 0).toFixed(1);
+    renderKeys(health.checked || []);
+  } catch (e) {
+    log('Health fehlgeschlagen (ok, schon geladen)', 'info');
+  }
+}
+
+function renderKeys(keys) {
+  const tbody = document.getElementById('key-table');
+  if (!keys.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b;text-align:center;padding:20px;">Keine Keys</td></tr>';
+    return;
+  }
+  tbody.innerHTML = keys.map(k => {
+    const status = k.status || (k.used ? 'used' : 'unknown');
+    const cls = status === 'healthy' ? 'status-healthy' : status === 'suspended' ? 'status-suspended' : 'status-used';
+    const credits = k.credits_remaining != null ? '$' + k.credits_remaining.toFixed(1) : '—';
+    return '<tr><td>' + (k.alias_email || k.email || '?').split('@')[0] + '</td>' +
+      '<td class="' + cls + '">' + status + '</td>' +
+      '<td>' + credits + '</td>' +
+      '<td class="key-trunc">' + (k.api_key || '').slice(0, 24) + '...</td></tr>';
+  }).join('');
+}
+
+async function runHealthCheck() {
+  try {
+    const r = await api('GET', '/pool/health?deep_check=false');
+    log('Health: ' + r.healthy + '/' + r.total + ' Keys OK, $' + (r.total_credits_remaining || 0).toFixed(1) + ' Credits', 'success');
+    renderKeys(r.checked || []);
+    document.getElementById('stat-credits').textContent = '$' + (r.total_credits_remaining || 0).toFixed(1);
+  } catch (e) {
+    log('Health fehlgeschlagen: ' + e.message, 'error');
+  }
+}
+
+async function startRotation() {
+  log('Starte Rotation...', 'info');
+  try {
+    const r = await api('POST', '/rotation/full', { fireworks_password: 'ZOE.jerry2024', save_to_pool: true });
+    if (r.status === 'success') log('Rotation erfolgreich!', 'success');
+    else log('Status: ' + r.status, 'error');
+    if (r.gmx_alias) log('Alias: ' + r.gmx_alias);
+    if (r.api_key) log('Key: ' + r.api_key);
+    if (r.execution_time) log('Dauer: ' + r.execution_time);
+    loadDashboard();
+  } catch (e) {
+    log('Fehler: ' + e.message, 'error');
+  }
+}
+</script>
+</body>
+</html>
