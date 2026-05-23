@@ -101,6 +101,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Auth Token (optional — set SINATOR_AUTH_TOKEN env var to enable)
+import secrets as _secrets
+import uuid as _uuid
+
+_SINATOR_TOKEN = os.environ.get("SINATOR_AUTH_TOKEN", "").strip()
+if not _SINATOR_TOKEN:
+    _SINATOR_TOKEN = "sinator-" + _uuid.uuid4().hex[:12]
+    logger.info(f"🔑 Auth-Token: {_SINATOR_TOKEN}")
+    logger.info(f"   Setze SINATOR_AUTH_TOKEN env var für persistenten Token")
+
+@app.middleware("http")
+async def auth_middleware(request, call_next):
+    # Public paths — no auth required
+    public = ("/health", "/docs", "/redoc", "/openapi.json", "/")
+    if request.url.path in public or request.url.path.startswith("/api/v1/browser/start"):
+        return await call_next(request)
+
+    # Check Bearer token for /api/* routes
+    if request.url.path.startswith("/api/"):
+        auth = request.headers.get("Authorization", "")
+        token = auth.replace("Bearer ", "") if auth.startswith("Bearer ") else ""
+        if token != _SINATOR_TOKEN:
+            import json as _json
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized. Use Authorization: Bearer <token>"},
+            )
+
+    return await call_next(request)
+
 # Routen registrieren
 app.include_router(browser_router, prefix="/api/v1")
 app.include_router(gmx_router, prefix="/api/v1")
