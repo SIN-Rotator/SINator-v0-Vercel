@@ -54,10 +54,14 @@ SWAP_REASONS = {
     429: "rate_limited",
 }
 
-PERMANENT_429_KEYWORDS = ("spending limit", "monthly", "quota exceeded", "suspended")
+PERMANENT_429_KEYWORDS = ("account.*suspended", "monthly spending limit", "reached.*limit", "suspended due to", "spending limit")
+# Keine "monthly" oder "quota exceeded" allein — zu viele False Positives
 
-CONFIRMED_DEAD_CODES = {401, 402}
-MAYBE_DEAD_CODES = {403, 412}
+# ALL codes außer 402 werden VERIFIZIERT (GET /models) bevor ein Swap passiert.
+# Nur 402 "credits_exhausted" bedeutet sicher "Key ist tot".
+PERMANENT_ERROR_KEYWORDS = ("suspended", "deactivated", "disabled", "invalid api key", "revoked", "expired")
+CONFIRMED_DEAD_CODES = {402}
+MAYBE_DEAD_CODES = {401, 403, 412}
 
 PUBLIC_PROXY_PATHS = ("/health", "/pool-status")
 
@@ -220,13 +224,26 @@ class PoolProxy:
     MAX_CONSECUTIVE_SWAPS = 2
 
     async def _verify_key_dead(self, api_key: str) -> bool:
+        """Verify key via lightweight chat request — more accurate than /models."""
         try:
-            async with self.fw_session.get(
-                f"{self.fireworks_base}/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=aiohttp.ClientTimeout(total=10),
+            body = {
+                "model": "accounts/fireworks/models/llama-v3p1-8b-instruct",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1,
+                "stream": False,
+            }
+            async with self.fw_session.post(
+                f"{self.fireworks_base}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=15),
             ) as r:
-                return r.status != 200
+                if r.status == 200:
+                    return False
+                text = await r.text()
+                is_dead = any(kw in text.lower() for kw in PERMANENT_ERROR_KEYWORDS)
+                logger.debug(f"Key verification: HTTP {r.status}, dead={is_dead}, body={text[:120]}")
+                return is_dead
         except Exception:
             return False
 
@@ -260,26 +277,38 @@ class PoolProxy:
                     status = fw_resp.status
 
                     if status in DEAD_KEY_CODES:
+                        error_body_bytes = await fw_resp.read()
+                        error_text = error_body_bytes.decode(errors="replace").lower()
+
                         consecutive_swaps += 1
                         if consecutive_swaps > self.MAX_CONSECUTIVE_SWAPS:
                             logger.error(f"Cascade stop: {consecutive_swaps} swaps, returning error")
-                            error_body = await fw_resp.read()
-                            return web.Response(body=error_body, status=status,
+                            return web.Response(body=error_body_bytes, status=status,
                                                 content_type=fw_resp.headers.get("Content-Type", "application/json"))
                         reason = SWAP_REASONS.get(status, "unknown")
                         if status in MAYBE_DEAD_CODES:
-                            still_dead = await self._verify_key_dead(key_info['api_key'])
-                            if not still_dead:
-                                logger.warning(f"Key got {status} but /models still OK — transient error, retrying same key")
+                            # Prüfe Response-Body auf echte Dead-Keywords
+                            is_confirmed_dead = any(kw in error_text for kw in PERMANENT_ERROR_KEYWORDS)
+                            # Verifiziere zusätzlich via /models
+                            models_dead = await self._verify_key_dead(key_info['api_key'])
+                            if not is_confirmed_dead and not models_dead:
+                                logger.warning(f"Key got {status} but error body + /models don't confirm dead — retrying same key")
                                 await asyncio.sleep(2)
                                 continue
+                            if is_confirmed_dead:
+                                logger.info(f"Confirmed dead via error body: {status} ({reason}) — matched keyword in response")
                         logger.warning(f"Dead key: {status} ({reason}), swapping (attempt {attempt+1})...")
                         new_key = await self._swap_key(reason)
                         if new_key and attempt < self.max_retries - 1:
                             headers["Authorization"] = f"Bearer {new_key['api_key']}"
-                            continue
-                        error_body = await fw_resp.read()
-                        return web.Response(body=error_body, status=status,
+                            # Key wurde intern getauscht — sag dem Client er soll retryen
+                            return web.Response(
+                                body=b'{"error":"key_swapped","message":"Pool key rotated, please retry","retry_after":1}',
+                                status=503,
+                                content_type="application/json",
+                                headers={"Retry-After": "1"},
+                            )
+                        return web.Response(body=error_body_bytes, status=status,
                                             content_type=fw_resp.headers.get("Content-Type", "application/json"))
 
                     if status == 429:
@@ -291,13 +320,20 @@ class PoolProxy:
                                 logger.error(f"Cascade stop: {consecutive_swaps} swaps for permanent 429")
                                 return web.Response(body=error_text.encode(), status=429,
                                                     content_type="application/json")
-                            logger.warning(f"Permanent 429 (spending limit), swapping...")
+                            logger.warning(f"Permanent 429 (spending limit matched: {[kw for kw in PERMANENT_429_KEYWORDS if kw in error_text.lower()]}), swapping...")
                             new_key = await self._swap_key("rate_limited_permanent")
                             if new_key and attempt < self.max_retries - 1:
                                 headers["Authorization"] = f"Bearer {new_key['api_key']}"
-                                continue
+                                # Intern getauscht — Client retryen
+                                return web.Response(
+                                    body=b'{"error":"key_rotated","message":"Rate limit reached, key rotated. Retry now.","retry_after":1}',
+                                    status=503,
+                                    content_type="application/json",
+                                    headers={"Retry-After": "1"},
+                                )
                             return web.Response(body=error_text.encode(), status=429,
                                                 content_type="application/json")
+                        # Transientes 429 — einfach warten + retry
                         retry_after = fw_resp.headers.get("Retry-After", "5")
                         try:
                             wait = min(int(retry_after), 30)
