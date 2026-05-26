@@ -883,7 +883,12 @@ async def get_page_target(cdp_client: CDPClient, url_filter: str = "") -> Option
     # Prefer www.gmx.net over auth.gmx.net (auth.gmx.net has no ACCOUNT-AVATAR)
     non_auth = [t for t in matching if "auth.gmx.net" not in t.get("url", "")]
     if non_auth:
-        # Prefer root URL over hash URL (hash URL = SPA hash route, root URL = page entry point)
+        # For GMX operations, prefer inbox (navigator.gmx.net) over homepage (www.gmx.net)
+        # The inbox has the "Einstellungen" button needed for alias management.
+        inbox = [t for t in non_auth if "navigator.gmx.net" in t.get("url", "")]
+        if inbox:
+            return inbox[0]
+        # Fallback: prefer root URL over hash URL
         root = [t for t in non_auth if t.get("url", "").rstrip("/") == "https://www.gmx.net" or t.get("url", "").rstrip("/") == "http://www.gmx.net"]
         if root:
             return root[0]

@@ -252,7 +252,7 @@ class PoolAddKeyResponse(BaseModel):
 class RotationRequest(BaseModel):
     """Request für komplette Account-Rotation (GMX Alias + Fireworks Account + API-Key)."""
     new_alias_name: Optional[str] = Field(default=None, description="Neuer GMX Alias-Name. Wenn None, wird generiert.")
-    fireworks_password: str = Field(..., description="Passwort für neuen Fireworks Account")
+    fireworks_password: Optional[str] = Field(default=None, description="Passwort für neuen Fireworks Account (optional — Backend nutzt Config)")
     gmx_alias_name: Optional[str] = Field(default=None, description="GMX Alias-Name für Rotation (alt)")
     save_to_pool: bool = Field(default=True, description="API-Key im Pool speichern")
 

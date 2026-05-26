@@ -437,173 +437,138 @@ class GmxService:
     async def _navigate_to_all_email_addresses(self, client: CDPClient, session_id: str, target_id: str = "") -> Optional[str]:
         """Navigiert zur allEmailAddresses Seite.
 
-        V8/9 Fix (2026-05-24):
-        1. Navigiere zur Inbox via CDP JS click "E-Mail" (kein Page.navigate → kein IAC)
-        2. CUA click "Einstellungen" AXButton vom Postfach → öffnet mail_settings/mail_settings
-        3. Playwright Frame-Scanning: allEmailAddresses Iframe wird AUTOMATISCH geladen
-        4. Fallback: CDP JS click auf "E-Mail-Adressen" Link in settings iframe
+        V10 Fix (2026-05-26):
+        1. Ensure inbox (navigator.gmx.net/mail?sid=...) — Playwright redirect if on bap
+        2. Playwright JS click ACCOUNT-AVATAR-NAVIGATOR → "E-Mail Einstellungen"
+           (CUA window titles are empty for programmatic tabs — unreliable)
+        3. Settings page loads with signature/settings iframe
+        4. In settings iframe, click "E-Mail-Adressen" link
+        5. allEmailAddresses iframe appears — scan and return URL
 
         Returns: allEmailAddresses iframe URL (für Logging) oder None.
         """
         import re as _re
         try:
-            # Step 1: Ensure we're on the inbox page with a valid SID
-            _sid = await self._navigate_to_inbox_for_cua(client, session_id)
-            if not _sid:
-                # Fallback to old ensure_mail_session
-                sess = await self._ensure_mail_session(client, session_id)
-                if not sess["success"]:
-                    return None
-                _sid = sess.get("sid")
-
-            if not _sid:
-                logger.warning("Could not get GMX SID")
-                return None
-
-            # Step 2: Redirect from bap (accessible) to normal navigator
-            # bap.navigator.gmx.net zeigt keine 3c.gmx.net iframes → CUA kann nicht klicken
-            if 'bap.navigator.gmx.net' in _sid_url if '_sid_url' in dir() else False:
-                pass  # handled below
-
-            # Step 3: CUA click "Einstellungen" from inbox + Playwright scan
             from playwright.async_api import async_playwright
 
             async with async_playwright() as _pw:
                 _b = await _pw.chromium.connect_over_cdp("http://127.0.0.1:9222")
 
-                # Fix: Wenn auf bap (accessible) → navigiere zu normalem navigator
-                _bap_redirect = False
-                for _pg_init in _b.contexts[0].pages:
-                    if 'bap.navigator.gmx.net' in _pg_init.url:
-                        _sid_m = _re.search(r'sid=([^&\s]+)', _pg_init.url)
-                        if _sid_m:
-                            _normal_url = f"https://navigator.gmx.net/mail?sid={_sid_m.group(1)}"
-                            logger.info(f"🔄 Redirecting from bap → {_normal_url[:80]}")
-                            await _pg_init.goto(_normal_url, wait_until="domcontentloaded", timeout=15000)
-                            await asyncio.sleep(3)
-                            _bap_redirect = True
+                # Step 1: Find GMX inbox page and ensure normal navigator (not bap)
+                _inbox_pg = None
+                for _ctx in _b.contexts:
+                    for _pg in _ctx.pages:
+                        if 'navigator.gmx.net/mail?sid=' in _pg.url and 'bap' not in _pg.url:
+                            _inbox_pg = _pg
                             break
-
-                _cua_success = False
-                try:
-                    import subprocess as _sp_local
-                    _chrome_pid = None
-                    try:
-                        _lsof = _sp_local.run(["lsof", "-i", ":9222", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=5)
-                        for _lf_line in _lsof.stdout.split('\n')[1:]:
-                            _parts = _lf_line.split()
-                            if len(_parts) >= 2 and _parts[1].isdigit():
-                                _chrome_pid = int(_parts[1])
+                        elif 'bap.navigator.gmx.net/mail?sid=' in _pg.url:
+                            # Redirect from bap to normal navigator
+                            _sid_m = _re.search(r'sid=([^&\s]+)', _pg.url)
+                            if _sid_m:
+                                _normal_url = f"https://navigator.gmx.net/mail?sid={_sid_m.group(1)}"
+                                logger.info(f"🔄 Redirecting from bap → {_normal_url[:80]}")
+                                await _pg.goto(_normal_url, wait_until="domcontentloaded", timeout=15000)
+                                await asyncio.sleep(3)
+                                _inbox_pg = _pg
                                 break
-                    except Exception:
-                        pass
-
-                    from agent_toolbox.core.cua_helper import find_cua_window, cua_click, cua_get_window_state
-                    _cua = find_cua_window(title_keywords=["FreeMail"], target_pid=_chrome_pid)
-                    if _cua:
-                        _cua_pid, _cua_wid = _cua
-                        _tree = cua_get_window_state(_cua_pid, _cua_wid)
-                        _einst_idx = None
-                        for _line in _tree.split('\n'):
-                            _s = _line.strip()
-                            if 'Einstellungen' in _s and 'AXButton' in _s:
-                                _m2 = _re.search(r'\]?\s*-\s*\[(\d+)\]', _s)
-                                if _m2:
-                                    _einst_idx = int(_m2.group(1))
-                                    break
-
-                        if _einst_idx:
-                            logger.info(f"CUA click Einstellungen (element [{_einst_idx}])")
-                            cua_click(_cua_pid, _cua_wid, _einst_idx)
-                            await asyncio.sleep(4)
-                            _cua_success = True
-                except Exception as _e:
-                    logger.warning(f"CUA Einstellungen failed: {_e}")
-
-                # Poll for allEmailAddresses in all Playwright pages/frames
-                for _poll in range(24):
-                    _all_pages = []
-                    for _ctx in _b.contexts:
-                        _all_pages.extend(_ctx.pages)
-                    for _pg in _all_pages:
-                        try:
-                            for _f in _pg.frames:
-                                if 'allEmailAddresses' in _f.url:
-                                    logger.info(f"allEmailAddresses iframe: {_f.url[:100]}")
-                                    return _f.url
-                        except Exception:
-                            pass
-                    await asyncio.sleep(1)
-
-                # Step 3: Fallback — new Playwright tab to loaded settings iframe
-                # Check if settings page opened but allEmailAddresses not yet loaded
-                if _cua_success:
-                    logger.info("CUA clicked but allEmailAddresses not found yet — trying CDP click on E-Mail-Adressen")
-                    # Find the new settings tab that CUA opened
-                    for _pg in _all_pages:
-                        try:
-                            if 'mail_settings' in _pg.url or 'navigator.gmx.net' in _pg.url:
-                                for _f in _pg.frames:
-                                    if '3c-bap' in _f.url and 'settings' in _f.url:
-                                        try:
-                                            _f.evaluate("""
-                                                document.querySelector('a:has-text(\"E-Mail-Adressen\")')?.click()
-                                            """)
-                                            await asyncio.sleep(3)
-                                        except Exception:
-                                            pass
-                        except Exception:
-                            pass
-
-                # Step 4: Try finding existing allEmailAddresses iframe (from prior sessions)
-                for _poll in range(12):
-                    for _ctx in _b.contexts:
-                        for _pg in _ctx.pages:
-                            try:
-                                for _f in _pg.frames:
-                                    if 'allEmailAddresses' in _f.url:
-                                        logger.info(f"allEmailAddresses (delayed): {_f.url[:100]}")
-                                        return _f.url
-                            except Exception:
-                                pass
-                    await asyncio.sleep(1)
-
-                # Step 5 (FALLBACK): Extract JSESSIONID → direct 3c.gmx.net navigation
-                # Works when CUA click doesn't open the right page (accessible mode)
-                logger.info("Fallback: trying direct 3c.gmx.net navigation with JSESSIONID")
-                _jsessionid = None
-                for _ctx5 in _b.contexts:
-                    for _pg5 in _ctx5.pages:
-                        for _f5 in _pg5.frames:
-                            if '3c.gmx.net' in _f5.url and 'jsessionid=' in _f5.url:
-                                _m = _re.search(r'jsessionid=([^&?;]+)', _f5.url)
-                                if _m:
-                                    _jsessionid = _m.group(1)
-                                    break
-                        if _jsessionid:
-                            break
-                    if _jsessionid:
+                    if _inbox_pg:
                         break
 
-                if _jsessionid:
-                    _direct_url = f"https://3c.gmx.net/mail/client/settings/allEmailAddresses;jsessionid={_jsessionid}"
-                    logger.info(f"Direct 3c.gmx.net → {_direct_url[:100]}")
-                    try:
-                        _pg_new = await _b.contexts[0].new_page()
-                        await _pg_new.goto(_direct_url, wait_until="domcontentloaded", timeout=15000)
-                        await asyncio.sleep(3)
-                        # Check if the page loaded with alias management
-                        for _poll in range(10):
-                            for _f in _pg_new.frames:
-                                if 'allEmailAddresses' in _f.url:
-                                    logger.info(f"✅ allEmailAddresses via direct 3c.gmx.net: {_f.url[:100]}")
-                                    return _f.url
-                            await asyncio.sleep(1)
-                        logger.warning("3c.gmx.net loaded but no allEmailAddresses frame found")
-                    except Exception as _e3c:
-                        logger.error(f"3c.gmx.net navigation failed: {_e3c}")
+                if not _inbox_pg:
+                    logger.warning("No GMX inbox page found")
+                    return None
 
-                logger.warning("allEmailAddresses iframe not found in any page")
+                logger.info(f"Inbox: {_inbox_pg.url[:80]}")
+
+                # Step 2: Click ACCOUNT-AVATAR-NAVIGATOR to open dropdown
+                await _inbox_pg.evaluate("""
+                    (function(){
+                        var avatar = document.querySelector('ACCOUNT-AVATAR-NAVIGATOR');
+                        if(avatar){
+                            avatar.click();
+                            avatar.dispatchEvent(new Event('mouseenter', {bubbles: true}));
+                            return 'opened';
+                        }
+                        return 'no avatar';
+                    })()
+                """)
+                await asyncio.sleep(3)
+
+                # Step 3: Click "E-Mail Einstellungen" in shadow DOM
+                _click_result = await _inbox_pg.evaluate("""
+                    (function(){
+                        var avatar = document.querySelector('ACCOUNT-AVATAR-NAVIGATOR');
+                        if(!avatar || !avatar.shadowRoot) return 'no shadow';
+                        var links = avatar.shadowRoot.querySelectorAll('a');
+                        for(var i=0;i<links.length;i++){
+                            var txt = links[i].textContent.trim().toLowerCase();
+                            if(txt.includes('e-mail') && txt.includes('einstellung')){
+                                links[i].click();
+                                return 'clicked: ' + links[i].textContent.trim();
+                            }
+                        }
+                        return 'not found';
+                    })()
+                """)
+                logger.info(f"Account avatar click: {_click_result}")
+                await asyncio.sleep(5)
+
+                # Step 4: Find settings page and click "E-Mail-Adressen" in settings iframe
+                _settings_pg = None
+                for _ctx in _b.contexts:
+                    for _pg in _ctx.pages:
+                        if 'mail_settings' in _pg.url:
+                            _settings_pg = _pg
+                            break
+                    if _settings_pg:
+                        break
+
+                if not _settings_pg:
+                    logger.warning("Settings page not opened after avatar click")
+                    return None
+
+                logger.info(f"Settings: {_settings_pg.url[:80]}")
+
+                # Find signature/settings iframe and click "E-Mail-Adressen"
+                for _f in _settings_pg.frames:
+                    if '3c.gmx.net' in _f.url and 'settings' in _f.url:
+                        try:
+                            _links = await _f.evaluate("""
+                                Array.from(document.querySelectorAll('a')).map(el => ({
+                                    text: el.textContent.trim(),
+                                    href: el.href || ''
+                                })).filter(el => el.text.toLowerCase() === 'e-mail-adressen')
+                            """)
+                            if _links:
+                                logger.info(f"Found E-Mail-Adressen link in {_f.url[:60]}")
+                                await _f.evaluate("""
+                                    (function(){
+                                        var links = document.querySelectorAll('a');
+                                        for(var i=0;i<links.length;i++){
+                                            if(links[i].textContent.trim().toLowerCase() === 'e-mail-adressen'){
+                                                links[i].click();
+                                                return 'clicked';
+                                            }
+                                        }
+                                        return 'not found';
+                                    })()
+                                """)
+                                await asyncio.sleep(5)
+                                break
+                        except Exception as _e:
+                            logger.debug(f"Frame click error: {_e}")
+
+                # Step 5: Poll for allEmailAddresses iframe
+                for _poll in range(20):
+                    for _ctx in _b.contexts:
+                        for _pg in _ctx.pages:
+                            for _f in _pg.frames:
+                                if 'allEmailAddresses' in _f.url:
+                                    logger.info(f"✅ allEmailAddresses: {_f.url[:100]}")
+                                    return _f.url
+                    await asyncio.sleep(1)
+
+                logger.warning("allEmailAddresses iframe not found")
                 return None
 
         except Exception as e:

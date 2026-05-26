@@ -1,91 +1,90 @@
 #!/usr/bin/env python3
-"""Batch rotation — generates N API keys sequentially."""
-import sys, os, asyncio, time, logging, re
+"""Batch generate N keys via rotation API, sequential (safe)."""
+import asyncio, json, time, sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "agent_toolbox" / "core"))
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%H:%M:%S')
-logger = logging.getLogger("batch")
+TARGET = 100
+POOL_FILE = Path(__file__).resolve().parent.parent / "data" / "fireworksai-pool.json"
+LOG_FILE = Path(__file__).resolve().parent.parent / "data" / "batch-rotate.log"
 
-TARGET = int(sys.argv[1]) if len(sys.argv) > 1 else 50
-FAIL_LIMIT = 5
+log_lines = []
 
-async def run_one(i):
-    proc = await asyncio.create_subprocess_exec(
-        "python3", str(Path(__file__).parent / "rotate.py"),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=str(Path(__file__).parent.parent),
-    )
-    output = []
-    async for line_bytes in proc.stdout:
-        line = line_bytes.decode("utf-8", errors="replace").rstrip()
-        output.append(line)
-        if any(k in line for k in ['✅', '❌', '⚠️', 'ROTATION COMPLETE', 'API Key creation failed']):
-            logger.info(f"[{i}/{TARGET}] {line}")
-    await proc.wait()
-    success = any("ROTATION COMPLETE" in l for l in output)
-    key = None
-    for l in output:
-        m = re.search(r'fw_[a-zA-Z0-9]{20,}', l)
-        if m:
-            key = m.group(0)
-            break
-    return success, key, output[-5:] if not success else []
+def log(msg):
+    line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+    log_lines.append(line)
+    print(line, flush=True)
+    LOG_FILE.write_text("\n".join(log_lines))
+
+async def count_available():
+    import http.client
+    conn = http.client.HTTPConnection("localhost", 8000, timeout=5)
+    conn.request("GET", "/api/v1/pool/stats")
+    resp = conn.getresponse()
+    data = json.loads(resp.read())
+    conn.close()
+    return data.get("available", 0), data.get("total", 0)
+
+async def rotate_one():
+    import http.client
+    conn = http.client.HTTPConnection("localhost", 8000, timeout=600)
+    body = json.dumps({"new_alias_name": None, "save_to_pool": True})
+    conn.request("POST", "/api/v1/rotation/full", body=body.encode(), headers={"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    data = json.loads(resp.read())
+    conn.close()
+    return data
 
 async def main():
-    from pool_manager import PoolManager
-    pool = PoolManager()
-    start_total = pool.get_stats()['total']
-    logger.info(f"Starting batch: {TARGET} keys, pool has {start_total}")
+    avail, total_start = await count_available()
+    log(f"Start: {avail} available / {total_start} total — Ziel: {TARGET} neue Keys")
 
-    ok = 0
-    fail_streak = 0
+    created = 0
+    successes = 0
+    failures = 0
     t0 = time.time()
 
-    for i in range(1, TARGET + 1):
-        logger.info(f"\n{'='*40} ROTATION {i}/{TARGET} {'='*40}")
+    while successes < TARGET:
+        log(f"\n--- Rotation #{successes + 1} (attempt) ---")
         try:
-            success, key, tail = await asyncio.wait_for(run_one(i), timeout=360)
-        except asyncio.TimeoutError:
-            logger.error(f"[{i}/{TARGET}] TIMEOUT (>6min)")
-            fail_streak += 1
-            if fail_streak >= FAIL_LIMIT:
-                logger.error(f"{FAIL_LIMIT} consecutive failures — stopping")
-                break
-            continue
+            result = await rotate_one()
+            status = result.get("status", "error")
+            api_key = result.get("api_key", "")
+            alias = result.get("gmx_alias", "")
+            elapsed = result.get("execution_time", "?")
+
+            if status == "success" and api_key:
+                successes += 1
+                log(f"✅ #{successes}/{TARGET} — {alias} → {api_key} ({elapsed}s)")
+            else:
+                failures += 1
+                failed_steps = result.get("steps_failed", [])
+                log(f"❌ #{successes + 1} FAILED: {status} | steps_failed={failed_steps} | err={result.get('error','')}")
+                if failures >= 10:
+                    log("⚠️  10 consecutive failures — aborting")
+                    break
+                log("🕐  waiting 30s before retry...")
+                await asyncio.sleep(30)
+                continue
         except Exception as e:
-            logger.error(f"[{i}/{TARGET}] ERROR: {e}")
-            fail_streak += 1
-            if fail_streak >= FAIL_LIMIT:
-                logger.error(f"{FAIL_LIMIT} consecutive failures — stopping")
+            failures += 1
+            log(f"💥 Exception: {e}")
+            if failures >= 10:
+                log("⚠️  10 consecutive failures — aborting")
                 break
+            await asyncio.sleep(30)
             continue
 
-        if success:
-            ok += 1
-            fail_streak = 0
-            elapsed = time.time() - t0
-            rate = ok / (elapsed / 60)
-            remaining = (TARGET - ok) / rate if rate > 0 else 0
-            logger.info(f"[{i}/{TARGET}] ✅ #{ok} key={key} | {rate:.1f}/min | ETA {remaining:.0f}min")
-        else:
-            fail_streak += 1
-            logger.error(f"[{i}/{TARGET}] ❌ FAIL (streak={fail_streak})")
-            for l in tail:
-                logger.error(f"  {l}")
-            if fail_streak >= FAIL_LIMIT:
-                logger.error(f"{FAIL_LIMIT} consecutive failures — stopping")
-                break
-            await asyncio.sleep(10)
+        failures = 0  # reset after success
+        if successes % 5 == 0:
+            avail, total = await count_available()
+            log(f"📊 Checkpoint: {avail} available / {total} total")
 
-    elapsed = time.time() - t0
-    pool.reload()
-    final = pool.get_stats()
-    logger.info(f"\n{'='*50}")
-    logger.info(f"BATCH DONE: {ok}/{TARGET} keys in {elapsed/60:.1f}min")
-    logger.info(f"Pool: {final['total']} total, {final['available']} available, {final['used']} used")
-    logger.info(f"Added: {final['total'] - start_total} new keys")
+    avail, total_end = await count_available()
+    t = time.time() - t0
+    log(f"\n{'='*50}")
+    log(f"FERTIG: {successes} keys in {t/60:.1f}min ({t/successes:.0f}s avg)")
+    log(f"Pool: {avail} available / {total_end} total")
 
 if __name__ == "__main__":
     asyncio.run(main())
