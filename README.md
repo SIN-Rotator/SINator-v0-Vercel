@@ -61,7 +61,8 @@ tail -f ~/.hermes/logs/pool-router.log
 | `scripts/pool-router.py` | Lokaler Proxy mit Auto-Failover |
 | `scripts/pool-router.plist` | macOS launchd Service (auto-start, restart on crash) |
 | `patches/error_classifier_412.patch` | 412-Retry-Fix |
-| `_ua_patch.py` | User-Agent Spoof fuer OpenAI SDK |
+| `skills/sin-hermes-provider-setup/` | Hermes Skill — Installation auf neuem Mac |
+| `_ua_patch.py` | User-Agent Spoof + max_retries=0 fuer OpenAI SDK |
 | `docs/` | 412-Fix, UA-Spoof, Pool-Wechsel, Troubleshooting, Router |
 
 ## Struktur
@@ -83,7 +84,10 @@ tail -f ~/.hermes/logs/pool-router.log
 │   ├── pool-switching.md                 # Pool-Wechsel Anleitung
 │   ├── troubleshooting.md                # Fehlerbehebung
 │   └── router.md                       # Pool-Router Doku
-├── _ua_patch.py                        # UA-Spoof
+├── skills/
+│   └── sin-hermes-provider-setup/      # Hermes Skill fuer Installation
+│       └── SKILL.md
+├── _ua_patch.py                        # UA-Spoof + max_retries=0
 ├── install.sh                          # Einziger Installer (Router + alles)
 └── README.md                           # Diese Datei
 ```

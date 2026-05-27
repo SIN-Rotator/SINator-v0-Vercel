@@ -93,6 +93,11 @@ if ! grep -q "max_turns" "$HERMES_HOME/config.yaml"; then
   echo "Set max_turns=999999 (unlimited)"
 fi
 
+# 7. Install own skill into Hermes
+mkdir -p "$HERMES_HOME/skills/survey/sin-hermes-provider-setup"
+curl -fsSL "$REPO/skills/sin-hermes-provider-setup/SKILL.md" -o "$HERMES_HOME/skills/survey/sin-hermes-provider-setup/SKILL.md"
+echo "Provider setup skill installed to Hermes."
+
 echo ""
 echo "=========================================="
 echo " SIN-Hermes-Provider-Bundle installed!"
