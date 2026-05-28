@@ -11,8 +11,8 @@
 **Cycle Time:** ~180s average
 **E2E Single Command:** `python tools/rotate.py`
 **Config:** GMX/Fireworks Credentials aus `data/config.json` (nicht mehr hardcodiert!)
-**Proxies:** 3 Instanzen (:8888, :8889, :8890) mit Subdomains `sinatorpool1/2/3.delqhi.com`
-**API Key (alle Macs):** `7avN1KkfInNqcOMn2CtwLTvx`
+**Proxies:** 10 Instanzen (:8888-:8897) hinter Pool-Router :9998, single URL `sinatorpool-router.delqhi.com`
+**API Key (alle Macs):** `<DEIN_API_KEY>`
 
 ### WAS IMMER VERWENDET WERDEN MUSS
 

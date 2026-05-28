@@ -5,11 +5,11 @@
 ```
 GMX Login (built-in, Step 0) → Alias Rotation (~180s) → Fireworks Signup
 → OTP → Verify → Login → Onboarding → Playwright Fallback → API Key → Pool
-Pool: 146 Keys (59 verfügbar, 10 used, 77 suspended)
+Pool: 218 Keys (94 verfügbar, 10 used, 114 suspended)
 Cycle Time: ~180s avg
-3 Pool Proxies: :8888, :8889, :8890 (aiohttp SSE + auto-swap)
-Tunnel Subdomains: sinatorpool1/2/3.delqhi.com
-API Key (alle Macs): 7avN1KkfInNqcOMn2CtwLTvx
+Pool-Router: :9998 (ThreadingMixIn) → 10 Proxys :8888-:8897
+Pool-Router URL: sinatorpool-router.delqhi.com (single endpoint, auto-failover)
+API Key (alle Macs): <DEIN_API_KEY>
 Dashboard SSE live
 ```
 
@@ -28,8 +28,8 @@ Dashboard SSE live
 ## ✅ V12 Changes (2026-05-26)
 
 ### 3 Pool-Proxies + Tunnel Subdomains
-- 3 dedizierte Proxy-Instanzen (`:8888`, `:8889`, `:8890`) mit je eigener Subdomain
-- `sinatorpool1.delqhi.com` → `:8888` (Mac 1), `sinatorpool2.delqhi.com` → `:8889` (Mac 2), `sinatorpool3.delqhi.com` → `:8890` (Mac 3)
+- Pool-Router (`:9998`) mit ThreadingMixIn + 10 Proxy-Instanzen (`:8888`-`:8897`)
+- EINE baseURL: `sinatorpool-router.delqhi.com` (Auto-Failover über alle Proxys)
 - `proxy/start-multi.sh` startet alle 3 + killt alte Instanzen
 - Kein Backup-Key mehr (`SIN_NO_BACKUP=true`)
 
@@ -102,7 +102,7 @@ Dashboard SSE live
 | 10 | V9 Sleep-Reduktion + Bugfixes | health mark_used(), Dashboard override, PoolManager reload |
 | 11 | V10 CUA PID Targeting | lsof PID-Ermittlung, target_pid an find_cua_window |
 | 12 | V11 Config Manager + Chat + Keychain | Credentials API, Rust chat_send, Keychain encryption |
-| 13 | V12 3 Proxies + Shadow DOM + Atomic Swap | 3 Pool-Proxies, Playwright shadow DOM navigation, atomic report+lease, 429 client-return, Chrome tab cleanup |
+| 13 | V13 Pool-Router | EINE baseURL, 10 Proxys, ThreadingMixIn, silent swap |
 
 ---
 
@@ -117,7 +117,7 @@ Ab jetzt nur noch:
 | 🔄 Live Runs | `python tools/rotate.py` — Keys generieren |
 | 📝 AGENTS.md | Learnings aus Live-Runs dokumentieren |
 
-**Status:** Feature-Complete ✅ — 146 Keys, ~180s/Rotation, 3 Proxies, Config Manager, Keychain, Chat-Assistent.
+**Status:** Feature-Complete ✅ — 218 Keys, ~180s/Rotation, Pool-Router + 10 Proxys, Config Manager, Keychain, Chat-Assistent.
 
 ---
 
@@ -177,13 +177,13 @@ curl -X POST http://localhost:8000/api/v1/config \
 | Service | Port | Beschreibung |
 |---------|------|-------------|
 | `com.sinator.backend` | :8000 | FastAPI Backend |
-| `com.sinator.pool-proxy` | :8888-:8890 | 3× aiohttp SSE + auto-swap Proxies |
-| `com.sinator.tunnel` | — | Cloudflare Named Tunnel (`sinator.delqhi.com`) |
+| `com.sinator.pool-proxy-{8888..8897}` | :8888-:8897 | 10× aiohttp SSE + silent swap Proxies |
+| `com.sinator.pool-router` | :9998 | Pool-Router mit ThreadingMixIn + Failover |
 | `com.sinator.pages` | :8040 | Landing Page |
 | `com.sinator.chrome` | :9222 | Chrome mit Profile 901 |
 | `com.sinator.cua-driver` | — | CUA AX-Daemon |
 
-### Tunnel-Routing
+### Pool-Router-Routing
 - `/` → `:8040` (Landing Page)
-- `/inference/v1/*`, `/v1/*` → `:8888` (Pool-Proxy)
-- `/api/*`, `/docs` → `:8000` (Backend)
+- `/inference/v1/*`, `/v1/*` → Pool-Router :9998 → 10 Proxys :8888-:8897
+- `/api/*`, `/docs` → :8000 (Backend)

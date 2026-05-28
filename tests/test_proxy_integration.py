@@ -1,5 +1,5 @@
 """
-Integration tests for Pool Proxy V12 error-handling (3 instances).
+Integration tests for Pool Proxy V13 error-handling (10 instances behind pool-router).
 Tests that the proxy correctly handles Fireworks error codes
 the way opencode TUI would experience them.
 """
@@ -8,9 +8,9 @@ import time
 import httpx
 
 POOL_API = "http://localhost:8000/api/v1"
-# Proxy instances (3x)
-PROXY_URLS = ["http://localhost:8888", "http://localhost:8889", "http://localhost:8890"]
-PROXY_URL = PROXY_URLS[0]  # Default to first proxy for single-proxy tests
+# Proxy instances (10x, accessed through pool-router :9998)
+PROXY_URLS = [f"http://localhost:{p}" for p in range(8888, 8898)]
+PROXY_URL = "http://localhost:9998"  # Pool-Router as default entry
 CACHE_FILE = "/Users/jeremy/.sin-pool/current-key.json"
 BACKUP_CACHE = "/Users/jeremy/.sin-pool/backup-key.json"
 

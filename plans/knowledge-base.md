@@ -190,13 +190,9 @@ curl -s http://localhost:8000/pool/stats | python3 -m json.tool
 curl -s http://localhost:8000/api/v1/config | python3 -m json.tool
 
 # Pool-Proxies (3 Instanzen)
-Mac 1: http://localhost:8888/inference/v1    → https://sinatorpool1.delqhi.com/inference/v1
-Mac 2: http://localhost:8889/inference/v1    → https://sinatorpool2.delqhi.com/inference/v1
-Mac 3: http://localhost:8890/inference/v1    → https://sinatorpool3.delqhi.com/inference/v1
-# apiKey (alle Macs): 7avN1KkfInNqcOMn2CtwLTvx
-Mac 2: http://localhost:8889/inference/v1    → https://sinatorpool2.delqhi.com/inference/v1
-Mac 3: http://localhost:8890/inference/v1    → https://sinatorpool3.delqhi.com/inference/v1
-# apiKey (alle Macs gleich): 7avN1KkfInNqcOMn2CtwLTvx
+Lokal: http://localhost:9998/inference/v1    → https://sinatorpool-router.delqhi.com/inference/v1
+# apiKey (alle Macs): <DEIN_API_KEY>
+# apiKey (alle Macs): <DEIN_API_KEY>
 ```
 
 ## 🔧 ARCHITECTURE (V12)
@@ -208,15 +204,13 @@ sinator-pages/              ← Landing Page (:8040)
 
 Services (LaunchAgents):
   com.sinator.backend     :8000  FastAPI
-  com.sinator.pool-proxy  :8888-:8890  3× aiohttp SSE + auto-swap
-  com.sinator.tunnel      —      Cloudflare Named Tunnel (3 Subdomains)
+  com.sinator.pool-router       :9998  Pool-Router (ThreadingMixIn + Failover)
+  com.sinator.pool-proxy-{8888..8897}  :8888-:8897  10× aiohttp SSE + silent swap
   com.sinator.pages       :8040  Landing Page
   com.sinator.chrome      :9222  Chrome Profile 901
   com.sinator.cua-driver  —      CUA AX-Daemon
 
 Tunnel Subdomains:
-  sinatorpool1.delqhi.com  → :8888 (Mac 1)
-  sinatorpool2.delqhi.com  → :8889 (Mac 2)
-  sinatorpool3.delqhi.com  → :8890 (Mac 3)
+  sinatorpool-router.delqhi.com  → :9998 (Pool-Router) → 10× Proxys :8888-:8897
   sinator.delqhi.com       → :8000 + :8040
 ```

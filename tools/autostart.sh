@@ -105,16 +105,47 @@ EOF
 </plist>
 EOF
 
-        # 4. Pool Proxy (aiohttp :8888)
+        # 4. Pool Router (ThreadingMixIn :9998)
         mkdir -p "${HOME}/.sin-pool"
-        cat > "$LA/com.sinator.pool-proxy.plist" << EOF
+        cat > "$LA/com.sinator.pool-router.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.sinator.pool-proxy</string>
+    <string>com.sinator.pool-router</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${PYTHON}</string>
+        <string>${SINATOR_DIR}/scripts/pool-router.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>${SINATOR_DIR}</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/pool-router-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pool-router-launchd.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
+EOF
+
+        # 5. Pool Proxys (10 Instanzen :8888-:8897)
+        for port in $(seq 8888 8897); do
+            cat > "$LA/com.sinator.pool-proxy-${port}.plist" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sinator.pool-proxy-${port}</string>
     <key>ProgramArguments</key>
     <array>
         <string>${PYTHON}</string>
@@ -135,75 +166,53 @@ EOF
         <key>SIN_POOL_API_URL</key>
         <string>http://localhost:8000/api/v1</string>
         <key>SIN_PROXY_PORT</key>
-        <string>8888</string>
+        <string>${port}</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/pool-proxy.log</string>
+    <string>/tmp/pool-proxy-${port}.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/pool-proxy.err</string>
+    <string>/tmp/pool-proxy-${port}.err</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
 </dict>
 </plist>
 EOF
-
-        # 5. Cloudflare Tunnel
-        cat > "$LA/com.sinator.tunnel.plist" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
- "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.sinator.tunnel</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>${SINATOR_DIR}/tools/sinator_tunnel.sh</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/sinator-tunnel.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/sinator-tunnel.log</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-</dict>
-</plist>
-EOF
+        done
 
         echo "→ Loading services..."
-        for svc in chrome cua-driver backend pool-proxy tunnel; do
-            launchctl load "$LA/com.sinator.${svc}.plist" 2>/dev/null || true
+        launchctl load "$LA/com.sinator.chrome.plist" 2>/dev/null || true
+        launchctl load "$LA/com.sinator.cua-driver.plist" 2>/dev/null || true
+        launchctl load "$LA/com.sinator.backend.plist" 2>/dev/null || true
+        launchctl load "$LA/com.sinator.pool-router.plist" 2>/dev/null || true
+        for port in $(seq 8888 8897); do
+            launchctl load "$LA/com.sinator.pool-proxy-${port}.plist" 2>/dev/null || true
         done
         echo ""
         echo "✅ All SINator services installed and loaded!"
         echo "   They will auto-start on next login/boot."
-        echo ""
-        echo "   Start order: Chrome → cua-driver → backend → pool-proxy → tunnel"
-        echo "   Chrome + cua-driver start first (no deps)"
-        echo "   Backend waits 8s for Chrome (CDP port 9222)"
-        echo "   Pool-proxy waits 3s for backend (:8000)"
-        echo "   Tunnel waits for pool-proxy (:8888)"
         ;;
 
     start)
         echo "→ Starting all SINator services..."
-        for svc in chrome cua-driver backend pool-proxy tunnel; do
-            launchctl kickstart "gui/$(id -u)/com.sinator.${svc}" 2>/dev/null || \
-                launchctl start "com.sinator.${svc}" 2>/dev/null || true
+        launchctl kickstart "gui/$(id -u)/com.sinator.chrome" 2>/dev/null || true
+        launchctl kickstart "gui/$(id -u)/com.sinator.cua-driver" 2>/dev/null || true
+        launchctl kickstart "gui/$(id -u)/com.sinator.backend" 2>/dev/null || true
+        launchctl kickstart "gui/$(id -u)/com.sinator.pool-router" 2>/dev/null || true
+        for port in $(seq 8888 8897); do
+            launchctl kickstart "gui/$(id -u)/com.sinator.pool-proxy-${port}" 2>/dev/null || true
         done
         echo "✅ Started"
         ;;
 
     stop)
         echo "→ Stopping all SINator services..."
-        for svc in tunnel pool-proxy backend cua-driver chrome; do
-            launchctl bootout "gui/$(id -u)/com.sinator.${svc}" 2>/dev/null || true
+        for port in $(seq 8897 -1 8888); do
+            launchctl bootout "gui/$(id -u)/com.sinator.pool-proxy-${port}" 2>/dev/null || true
         done
+        launchctl bootout "gui/$(id -u)/com.sinator.pool-router" 2>/dev/null || true
+        launchctl bootout "gui/$(id -u)/com.sinator.backend" 2>/dev/null || true
+        launchctl bootout "gui/$(id -u)/com.sinator.cua-driver" 2>/dev/null || true
+        launchctl bootout "gui/$(id -u)/com.sinator.chrome" 2>/dev/null || true
         echo "✅ Stopped"
         ;;
 
@@ -211,11 +220,18 @@ EOF
         echo "╔══════════════════════════════════════╗"
         echo "║       SINator Service Status         ║"
         echo "╠══════════════════════════════════════╣"
-        for svc in chrome cua-driver backend pool-proxy tunnel; do
+        for svc in chrome cua-driver backend pool-router; do
             if launchctl print "gui/$(id -u)/com.sinator.${svc}" 2>/dev/null | grep -q "state = running"; then
                 echo "║  ✅ com.sinator.${svc}"
             else
                 echo "║  ❌ com.sinator.${svc}"
+            fi
+        done
+        for port in $(seq 8888 8897); do
+            if launchctl print "gui/$(id -u)/com.sinator.pool-proxy-${port}" 2>/dev/null | grep -q "state = running"; then
+                echo "║  ✅ com.sinator.pool-proxy-${port}"
+            else
+                echo "║  ❌ com.sinator.pool-proxy-${port}"
             fi
         done
         echo "╠══════════════════════════════════════╣"
@@ -232,24 +248,29 @@ EOF
             echo "║  🌐 Backend:     not reachable ❌"
         fi
 
-        if curl -s http://localhost:8888/health &>/dev/null; then
-            echo "║  🌐 Proxy:       http://localhost:8888 ✅"
+        if curl -s http://localhost:9998/health &>/dev/null; then
+            echo "║  🌐 Router:      http://localhost:9998 ✅"
         else
-            echo "║  🌐 Proxy:       not reachable ❌"
+            echo "║  🌐 Router:      not reachable ❌"
         fi
 
-        TUNNEL_URL=$(grep -o 'https://.*trycloudflare.com' /tmp/sinator-tunnel.log 2>/dev/null | tail -1)
-        if [ -n "$TUNNEL_URL" ]; then
-            echo "║  🌐 Tunnel:      ${TUNNEL_URL} ✅"
-        else
-            echo "║  🌐 Tunnel:      not connected ❌"
-        fi
+        for port in $(seq 8888 8897); do
+            if curl -s --max-time 1 "http://localhost:${port}/health" &>/dev/null; then
+                echo "║  🌐 Proxy :${port}  ✅"
+            else
+                echo "║  🌐 Proxy :${port}  ❌"
+            fi
+        done
         echo "╚══════════════════════════════════════╝"
         ;;
 
     uninstall)
         echo "→ Uninstalling all SINator LaunchAgents..."
-        for svc in tunnel pool-proxy backend cua-driver chrome; do
+        for port in $(seq 8897 -1 8888); do
+            launchctl bootout "gui/$(id -u)/com.sinator.pool-proxy-${port}" 2>/dev/null || true
+            rm -f "$LA/com.sinator.pool-proxy-${port}.plist"
+        done
+        for svc in pool-router backend cua-driver chrome; do
             launchctl bootout "gui/$(id -u)/com.sinator.${svc}" 2>/dev/null || true
             rm -f "$LA/com.sinator.${svc}.plist"
         done

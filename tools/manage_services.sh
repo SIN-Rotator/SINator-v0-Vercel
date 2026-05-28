@@ -1,16 +1,18 @@
 #!/bin/bash
-# SINator Service Manager — install/start/stop all launchd services
-# Usage: ./manage_services.sh {install|start|stop|status|logs}
+# SINator Service Manager — start|stop|restart|status for all services
+# Usage: ./tools/manage_services.sh {start|stop|restart|status|install|uninstall}
 set -e
 
 SINATOR_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON=$(which python3)
 
 case "${1:-status}" in
-    install)
-        echo "→ Installing all SINator launchd services..."
 
-        # Backend service
+    install)
+        echo "→ Creating SINator LaunchAgents..."
+        $0 uninstall 2>/dev/null || true
+
+        # Backend (:8000)
         cat > ~/Library/LaunchAgents/com.sinator.backend.plist << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -30,6 +32,11 @@ case "${1:-status}" in
     <true/>
     <key>WorkingDirectory</key>
     <string>${SINATOR_DIR}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>${SINATOR_DIR}/agent_toolbox/core</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>/tmp/sinator-backend.log</string>
     <key>StandardErrorPath</key>
@@ -40,15 +47,46 @@ case "${1:-status}" in
 </plist>
 EOF
 
-        # Pool Proxy service (replaces deprecated watchdog)
-        cat > ~/Library/LaunchAgents/com.sinator.pool-proxy.plist << EOF
+        # Pool Router (:9998)
+        cat > ~/Library/LaunchAgents/com.sinator.pool-router.plist << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.sinator.pool-proxy</string>
+    <string>com.sinator.pool-router</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${PYTHON}</string>
+        <string>${SINATOR_DIR}/scripts/pool-router.py</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>WorkingDirectory</key>
+    <string>${SINATOR_DIR}</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/pool-router-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pool-router-launchd.log</string>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
+EOF
+
+        # 10 Pool Proxys (:8888-:8897)
+        for port in $(seq 8888 8897); do
+            cat > ~/Library/LaunchAgents/com.sinator.pool-proxy-${port}.plist << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sinator.pool-proxy-${port}</string>
     <key>ProgramArguments</key>
     <array>
         <string>${PYTHON}</string>
@@ -69,97 +107,96 @@ EOF
         <key>SIN_POOL_API_URL</key>
         <string>http://localhost:8000/api/v1</string>
         <key>SIN_PROXY_PORT</key>
-        <string>8888</string>
+        <string>${port}</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/pool-proxy.log</string>
+    <string>/tmp/pool-proxy-${port}.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/pool-proxy.err</string>
+    <string>/tmp/pool-proxy-${port}.err</string>
     <key>ThrottleInterval</key>
     <integer>10</integer>
 </dict>
 </plist>
 EOF
-
-        # Tunnel service (wraps cloudflared, auto-saves URL)
-        mkdir -p "${HOME}/.sin-pool"
-        cat > ~/Library/LaunchAgents/com.sinator.tunnel.plist << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
- "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.sinator.tunnel</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>${SINATOR_DIR}/tools/sinator_tunnel.sh</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/sinator-tunnel.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/sinator-tunnel.log</string>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-</dict>
-</plist>
-EOF
+        done
 
         echo "→ Loading services..."
-        for svc in backend pool-proxy tunnel; do
-            launchctl load ~/Library/LaunchAgents/com.sinator.${svc}.plist 2>/dev/null || true
+        launchctl load ~/Library/LaunchAgents/com.sinator.backend.plist 2>/dev/null || true
+        launchctl load ~/Library/LaunchAgents/com.sinator.pool-router.plist 2>/dev/null || true
+        for port in $(seq 8888 8897); do
+            launchctl load ~/Library/LaunchAgents/com.sinator.pool-proxy-${port}.plist 2>/dev/null || true
         done
-        echo "✅ All services installed"
+        echo "✅ Services installed and loaded"
         ;;
 
     start)
-        for svc in backend pool-proxy tunnel; do
-            launchctl kickstart gui/$(id -u)/com.sinator.${svc} 2>/dev/null || \
-                launchctl start com.sinator.${svc} 2>/dev/null || true
+        launchctl kickstart gui/$(id -u)/com.sinator.backend 2>/dev/null || \
+            launchctl start com.sinator.backend 2>/dev/null || true
+        launchctl kickstart gui/$(id -u)/com.sinator.pool-router 2>/dev/null || \
+            launchctl start com.sinator.pool-router 2>/dev/null || true
+        for port in $(seq 8888 8897); do
+            launchctl kickstart gui/$(id -u)/com.sinator.pool-proxy-${port} 2>/dev/null || true
         done
-        echo "✅ Services started"
+        echo "✅ Started"
         ;;
 
     stop)
-        for svc in backend pool-proxy tunnel; do
-            launchctl bootout gui/$(id -u)/com.sinator.${svc} 2>/dev/null || true
+        for port in $(seq 8897 -1 8888); do
+            launchctl bootout gui/$(id -u)/com.sinator.pool-proxy-${port} 2>/dev/null || true
         done
-        echo "✅ Services stopped"
+        launchctl bootout gui/$(id -u)/com.sinator.pool-router 2>/dev/null || true
+        launchctl bootout gui/$(id -u)/com.sinator.backend 2>/dev/null || true
+        echo "✅ Stopped"
+        ;;
+
+    restart)
+        $0 stop
+        sleep 2
+        $0 start
         ;;
 
     status)
         echo "=== SINator Services ==="
-        for svc in backend pool-proxy tunnel; do
-            if launchctl print gui/$(id -u)/com.sinator.${svc} 2>/dev/null | grep -q "state = running"; then
-                echo "  ✅ com.sinator.${svc} — running"
+        for svc in backend pool-router; do
+            if launchctl list | grep -q "com.sinator.${svc}"; then
+                echo "  ✅ com.sinator.${svc}"
             else
-                echo "  ❌ com.sinator.${svc} — not running"
+                echo "  ❌ com.sinator.${svc}"
             fi
         done
-        if pgrep -f cloudflared &>/dev/null; then
-            TUNNEL_URL=$(grep -o 'https://.*trycloudflare.com' /tmp/sinator-tunnel.log 2>/dev/null | head -1)
-            echo ""
-            echo "  Tunnel URL: ${TUNNEL_URL:-checking...}"
-        fi
+        for port in $(seq 8888 8897); do
+            if launchctl list | grep -q "com.sinator.pool-proxy-${port}"; then
+                echo "  ✅ com.sinator.pool-proxy-${port}"
+            else
+                echo "  ❌ com.sinator.pool-proxy-${port}"
+            fi
+        done
+        echo ""
+        echo "=== Health ==="
+        curl -s --max-time 2 http://localhost:8000/health 2>/dev/null \
+            && echo "  :8000 ✅" || echo "  :8000 ❌"
+        curl -s --max-time 2 http://localhost:9998/health 2>/dev/null \
+            && echo "  :9998 ✅" || echo "  :9998 ❌"
+        for port in $(seq 8888 8897); do
+            curl -s --max-time 1 http://localhost:${port}/health >/dev/null 2>&1 \
+                && echo "  :${port} ✅" || echo "  :${port} ❌"
+        done
         ;;
 
-    logs)
-        echo "=== Backend ==="
-        tail -5 /tmp/sinator-backend.log 2>/dev/null || echo "  (no log)"
-        echo ""
-        echo "=== Pool Proxy ==="
-        tail -5 /tmp/pool-proxy.log 2>/dev/null || echo "  (no log)"
-        echo ""
-        echo "=== Tunnel ==="
-        tail -3 /tmp/sinator-tunnel.log 2>/dev/null || echo "  (no log)"
+    uninstall)
+        echo "→ Uninstalling SINator LaunchAgents..."
+        for port in $(seq 8897 -1 8888); do
+            launchctl bootout gui/$(id -u)/com.sinator.pool-proxy-${port} 2>/dev/null || true
+            rm -f ~/Library/LaunchAgents/com.sinator.pool-proxy-${port}.plist
+        done
+        for svc in pool-router backend; do
+            launchctl bootout gui/$(id -u)/com.sinator.${svc} 2>/dev/null || true
+            rm -f ~/Library/LaunchAgents/com.sinator.${svc}.plist
+        done
+        echo "✅ Uninstalled"
         ;;
 
     *)
-        echo "Usage: $0 {install|start|stop|status|logs}"
+        echo "Usage: $0 {install|start|stop|restart|status|uninstall}"
         ;;
 esac

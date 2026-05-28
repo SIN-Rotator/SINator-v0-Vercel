@@ -9,12 +9,12 @@ python tools/rotate.py
 # → OTP → Verify → Login → Onboarding → Playwright Fallback → API Key → Pool
 ```
 
-**Pool:** 146 Keys (59 verfügbar, 10 used, 77 suspended)
+**Pool:** 218 Keys (94 verfügbar, 10 used, 114 suspended)
 **Cycle Time:** ~180s average
-**Pool Proxies:** 3 dedizierte Instanzen (aiohttp SSE + auto-swap)
-**Tunnel Subdomains:** `sinatorpool1.delqhi.com`, `sinatorpool2.delqhi.com`, `sinatorpool3.delqhi.com`
-**API Key (alle Macs gleich):** `7avN1KkfInNqcOMn2CtwLTvx`
-**Services:** com.sinator.backend (:8000), 3× Pool-Proxy (:8888-:8890), Tunnel, Pages (:8040)
+**Pool Proxies:** 10 Instanzen (aiohttp SSE + silent swap) hinter Pool-Router :9998
+**Pool-Router URL:** `sinatorpool-router.delqhi.com` (single endpoint, auto-failover)
+**API Key (alle Macs gleich):** `<DEIN_API_KEY>`
+**Services:** com.sinator.backend (:8000), com.sinator.pool-router (:9998), 10× pool-proxy (:8888-:8897), Pages (:8040)
 
 ## 🔧 V12 CHANGES (2026-05-26)
 
@@ -68,12 +68,11 @@ python tools/rotate.py
 
 ## 🔧 V12 FIXES (2026-05-26)
 
-### 3 Pool-Proxies + Tunnel Subdomains
-**Problem:** Ein Proxy für alle Macs → Contention, 429s, cascade failures.
-**Fix:** 3 dedizierte Proxy-Instanzen (`:8888`, `:8889`, `:8890`), je mit eigener Subdomain:
-- `sinatorpool1.delqhi.com` → `:8888` (Mac 1)
-- `sinatorpool2.delqhi.com` → `:8889` (Mac 2)
-- `sinatorpool3.delqhi.com` → `:8890` (Mac 3)
+### Pool-Router + 10 Proxys
+**Fix:** EIN Pool-Router (`:9998`) verteilt auf 10 Proxy-Instanzen (`:8888`-`:8897`):
+- Keine einzelnen Subdomains mehr — nur `sinatorpool-router.delqhi.com`
+- Router macht Auto-Failover bei 413/429/412/5xx
+- Cooldown nach 3 Fehlern (60s Pause)
 
 **Start:** `proxy/start-multi.sh` — startet alle 3 + killt alte Instanzen.
 

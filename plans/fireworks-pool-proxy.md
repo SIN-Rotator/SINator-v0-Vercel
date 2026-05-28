@@ -120,8 +120,8 @@ Der Proxy injected den echten Key IMMER auf Request-Ebene.
 ## Request Flow (Revised)
 
 ```
-1. CLI sends: POST https://sinatorpool1.delqhi.com/inference/v1/chat/completions
-   Headers: Authorization: Bearer 7avN1KkfInNqcOMn2CtwLTvx
+1. CLI sends: POST https://sinatorpool-router.delqhi.com/inference/v1/chat/completions
+   Headers: Authorization: Bearer <DEIN_API_KEY>
 
 2. Proxy:
    a. Check local cache → has a leased key? → use it
@@ -264,7 +264,7 @@ The old proxy missed 401, 412 which are also key-death signals.
       "npm": "@ai-sdk/fireworks",
       "name": "Fireworks AI (Pool)",
       "options": {
-        "baseURL": "https://sinatorpool1.delqhi.com/inference/v1"
+        "baseURL": "https://sinatorpool-router.delqhi.com/inference/v1"
       },
       "models": { ... }
     }
@@ -278,7 +278,7 @@ Auth key can be anything (e.g. "pool") — proxy replaces it with leased key.
 ### aider
 
 ```bash
-export OPENAI_API_BASE=https://sinatorpool1.delqhi.com/inference/v1
+export OPENAI_API_BASE=https://sinatorpool-router.delqhi.com/inference/v1
 export OPENAI_API_KEY=pool
 ```
 
