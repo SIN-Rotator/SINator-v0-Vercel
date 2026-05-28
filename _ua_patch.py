@@ -4,7 +4,7 @@
 2. max_retries=0: Retry wird vom Pool-Router übernommen, nicht vom SDK
 
 Der Router (localhost:9998) failtovert automatisch bei 429/412/5xx
-zu sinatorpool1/2/3. SDK-Retry würde nur denselben Endpoint
+zu den 10 lokalen Proxys. SDK-Retry würde nur denselben Endpoint
 wiederholen → sinnlos. Router-Retry → nächster Pool.
 """
 import openai

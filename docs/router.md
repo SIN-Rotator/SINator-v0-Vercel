@@ -2,7 +2,7 @@
 
 ## Was ist das?
 
-Ein lokaler Mini-Proxy (`pool-router.py`) der auf `localhost:9998` lauscht und Requests an `sinatorpool1/2/3.delqhi.com` weiterleitet.
+Ein lokaler Mini-Proxy (`pool-router.py`) der auf `localhost:9998` lauscht und Requests an 10 lokale Proxys (`localhost:8888-8897`) weiterleitet.
 
 **Killer-Feature:** Bei 413 (Payload Too Large), 429 (Rate Limit), 412 (Suspended), oder 5xx (Server Error) springt der Router **automatisch** zum nächsten Pool.
 
@@ -26,28 +26,24 @@ Das macht:
 3. Router im Hintergrund starten (`nohup`)
 4. 412-Patch + UA-Spoof wie gewohnt anwenden
 
-## Neue Proxies hinzufügen
+## POOLS-Liste
 
-Der Router nutzt eine einfache Python-Liste. Um einen 4. Pool hinzuzufügen:
+Der Router leitet an diese 10 lokalen Proxys weiter:
 
-```bash
-# 1. Edit pool-router.py
-nano ~/.hermes/scripts/pool-router.py
-
-# 2. POOLS-Liste erweitern:
-# Vorher:
+```python
 POOLS = [
-    "https://sinatorpool1.delqhi.com",
-    "https://sinatorpool2.delqhi.com",
-    "https://sinatorpool3.delqhi.com",
+    "http://localhost:8888",
+    "http://localhost:8889",
+    "http://localhost:8890",
+    "http://localhost:8891",
+    "http://localhost:8892",
+    "http://localhost:8893",
+    "http://localhost:8894",
+    "http://localhost:8895",
+    "http://localhost:8896",
+    "http://localhost:8897",
 ]
-# Nachher:
-POOLS = [
-    "https://sinatorpool1.delqhi.com",
-    "https://sinatorpool2.delqhi.com",
-    "https://sinatorpool3.delqhi.com",
-    "https://sinatorpool4.delqhi.com",  # NEU
-]
+```
 
 # 3. Router neustarten
 pkill -f pool-router.py
@@ -71,9 +67,16 @@ Hermes denkt es redet mit einem Provider. Tatsächlich redet es mit dem lokalen 
 
 ### Reihenfolge (Priorität)
 
-1. `sinatorpool1.delqhi.com`
-2. `sinatorpool2.delqhi.com`
-3. `sinatorpool3.delqhi.com`
+1. `localhost:8888` (Pool 1)
+2. `localhost:8889` (Pool 2)
+3. `localhost:8890` (Pool 3)
+4. `localhost:8891` (Pool 4)
+5. `localhost:8892` (Pool 5)
+6. `localhost:8893` (Pool 6)
+7. `localhost:8894` (Pool 7)
+8. `localhost:8895` (Pool 8)
+9. `localhost:8896` (Pool 9)
+10. `localhost:8897` (Pool 10)
 
 ### Retry-Trigger (Status Codes)
 
@@ -96,7 +99,7 @@ Wenn ALLE Pools denselben Fehler zurückgeben (z.B. 413, 500), wird der Status-C
 
 ### Proxy charset bug fix
 
-Der Pool-Proxy (`~/.sin-pool/server.py`) crashte bei `Content-Type: application/json; charset=utf-8` von Fireworks mit `ValueError`. Fix: charset-Parameter vor aiohttp-Response-Konstruktion strippen. Betrifft alle 3 Proxy-Instanzen (8888/8889/8890).
+Der Pool-Proxy (`~/.sin-pool/server.py`) crashte bei `Content-Type: application/json; charset=utf-8` von Fireworks mit `ValueError`. Fix: charset-Parameter vor aiohttp-Response-Konstruktion strippen. Betrifft alle 10 Proxy-Instanzen (8888-8897).
 
 ### Logs
 
@@ -133,18 +136,16 @@ tail -f ~/.hermes/logs/pool-router.log
 - **Kein Health-Check** — Der Router weiß nicht ob ein Pool "langsam" ist, nur ob er Fehler wirft.
 - **Ein Prozess pro Maschine** — Der Router bindet Port 9998. Auf derselben Maschine kann nur einer laufen (launchd managed).
 
-## Alternative: Direkte Pools (kein Router)
+## Alternative: Direkter Pool (kein Router)
 
-Wenn du lieber direkt einen Pool ansprechen willst (z.B. weil Router einen Bug hat oder du nur einen Pool hast):
+Wenn du lieber direkt einen lokalen Proxy ansprechen willst (z.B. weil Router einen Bug hat):
 
 ```bash
-# Config direkt auf Pool 2
+# Config direkt auf Pool 1
 # ~/.hermes/config.yaml editieren:
-#   base_url: https://sinatorpool2.delqhi.com/inference/v1
+#   base_url: http://localhost:8888/inference/v1
 # Dann Router stoppen (falls läuft):
 pkill -f pool-router.py
 ```
 
-Oder `config/fireworks-pool2.yaml` als Vorlage nutzen.
-
-Der direkte Pool-Installer überschreibt die Config mit der Pool-URL.
+Oder `config/fireworks-pool1.yaml` als Vorlage nutzen.
