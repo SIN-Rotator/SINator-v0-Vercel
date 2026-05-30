@@ -1,6 +1,6 @@
 # SINator — Fireworks AI Key Pool
 
-[![graphify](https://img.shields.io/badge/graphify-knowledge%20graph-8A2BE2)](graphify-out/graph.json)
+[![GitNexus](https://img.shields.io/badge/GitNexus-knowledge%20graph-8B5CF6)](.gitnexus/)
 
 Automated GMX alias rotation → Fireworks AI account → API key pool.
 OpenAI-compatible proxy with automatic key rotation on rate-limits.

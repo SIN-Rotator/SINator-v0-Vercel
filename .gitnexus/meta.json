@@ -1,0 +1,14 @@
+{
+  "repoPath": "/Users/jeremy/dev/SIN-Rotator-SINator-FireworksAI",
+  "lastCommit": "f62e21b973d1c8d1239da8cd1fca43b069495a3a",
+  "indexedAt": "2026-05-30T00:51:05.934Z",
+  "remoteUrl": "git@github.com:SIN-Rotator/SINator-FireworksAI",
+  "stats": {
+    "files": 77,
+    "nodes": 2044,
+    "edges": 3656,
+    "communities": 73,
+    "processes": 123,
+    "embeddings": 0
+  }
+}
