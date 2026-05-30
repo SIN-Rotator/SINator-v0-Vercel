@@ -4,7 +4,36 @@
 
 ---
 
+<<<<<<< HEAD
 ## 🛑 BANNED: Tauri v2 Patterns (2026-05-25)
+=======
+## 🚫 BANNED: Playwright-native Anti-Patterns (2026-05-31) — V15.4
+
+| ❌ Verboten | Grund |
+|------------|-------|
+| Playwright `check()` auf React-Checkbox | "Clicking did not change state" — React-CB ignoriert JS-Click. Use native `el.click()` auf `<button role="checkbox">` (Radix UI) |
+| `input[type="checkbox"]` mit `aria-label` für Use-Cases | Fireworks Use-Cases: `aria-label` Matching funktioniert NICHT — Checkboxen werden nicht gesetzt. Use `label:has-text("{use_case}")` + click() |
+| `label:has-text("Terms")` für Terms-Checkbox | Matcht den "Terms of Service" Link, nicht die Checkbox. Use `button[role="checkbox"]` + native `el.click()` |
+| Nur ein einfacher Button-Scan für Continue/Submit | React re-rendered Buttons → einfacher Scan trifft falschen Button. Use 3-Stufen-Strategie: 1) `has-text()` + `is_disabled()`, 2) `type="submit"`, 3) case-insensitive scan |
+| Playwright `fill()` auf React-Inputs ohne `click()` vorher | React-State nicht aktualisiert. Use `click()` + `fill()` oder `type(delay=50)` |
+| `page.locator('input[type="email"]')` auf Fireworks | Input hat KEIN type-Attribut. Use `input[name="email"]` |
+| `page.locator('input[type="password"]')` als einziger Selector | Es gibt 2 Password-Inputs (Password + Confirm). Use `input[name="password"]` |
+| `text=CREATE` als Button-Selector | Matcht Cookie-Banner "Create profiles for personalised advertising" |
+| `text=E-Mail` als Page-Link | Matcht News-Artikel (Text im Content, nicht Nav-Link) |
+| `text=Next` als Submit-Button | Matcht Cookie-Banner "Next" — use `button[type="submit"]` + text-check |
+| `page.goto()` auf 3c.gmx.net direkt | Triggert IAC Anti-Automation. Use shadow DOM navigation via Playwright |
+| `browser.new_page()` für jeden Schritt | Tab-Explosion → Chrome überlastet. Reuse pages, close non-essential tabs |
+| `create_api_key()` ohne Session Reuse | Neue Page = keine Cookies → API Key Seite redirected zu `/login`. Use `login_fireworks()` Session übergeben (page+playwright+browser) |
+| `return {{...}}` statt `return {...}` | Python interpretiert `{{...}}` als Set mit Dict → `TypeError: cannot use 'dict' as set element` |
+| `parentElement` für Shadow DOM Traversal | Bricht an Shadow-Boundary. Use `el.getRootNode().host` |
+| `_click_text()` Helper aus V5/V7 | Unreliable text-matching. Use Playwright-native locators |
+| `cua-driver` für Navigation | Tab-Titel ist leer bei programmatischen Tabs. Use Playwright für Navigation |
+| `find_cua_window(title_keywords=["FreeMail"])` | Chrome-Titel ist LEER für neue Tabs. Use `get_page_target()` mit URL-Matching |
+
+---
+
+## 🚫 BANNED: Tauri v2 Patterns (2026-05-25)
+>>>>>>> acf9862 (docs: fix outdated docs — V15.4 cleanup)
 
 | ❌ Verboten | Grund |
 |------------|-------|
@@ -54,7 +83,11 @@
 
 ## 🛑 BANNED: OTP/Email-Lesung (2026-05-12)
 
+<<<<<<< HEAD
 **GMX MailCheck Extension ist DER EINZIG ZULÄSSIGE WEG für OTP.**
+=======
+**GMX Email-Körper (OOPIF) via Playwright-Frames (V15.4):** `page.frames` sucht native nach `mailbody-ui.de`. CDP `attach_to_iframe()` ist Fallback via Playwright-Browser-WS.
+>>>>>>> acf9862 (docs: fix outdated docs — V15.4 cleanup)
 
 | ❌ Verboten | Grund |
 |------------|-------|
@@ -63,6 +96,7 @@
 | Shadow DOM Traversal für Email-Zugriff | Wicket blockiert alle JS-Events |
 | `read_otp()` OHNE Extension-Methode | HTTP-API ist tot |
 
+<<<<<<< HEAD
 **✅ Erlaubt:**
 - `_read_otp_via_extension()` — Extension-Popup öffnen, Email per JS klicken, iframe navigieren
 - Fallback: `_read_otp_via_http()` — existiert noch aber gibt 403
@@ -70,14 +104,36 @@
 ---
 
 ## 🛑 BANNED: GMX Anti-Patterns (2026-05-12 v3)
+=======
+**✅ Erlaubt:** Playwright `page.frames` nach OOPIF suchen → Verify-URL extrahieren. CDP `attach_to_iframe()` via Playwright-Browser-WS als Fallback.
+
+---
+
+## 🚫 BANNED: Chrome Session Management (2026-05-11 — HISTORISCH)
+
+> V15.4 nutzt `chromium.launch()` — diese Bans gelten nur falls jemand noch `connect_over_cdp()` versucht.
+>>>>>>> acf9862 (docs: fix outdated docs — V15.4 cleanup)
 
 Diese Ansätze wurden ALLE ausprobiert. JEDER einzelne ist gescheitert:
 
+<<<<<<< HEAD
 | ❌ Verboten | Symptom |
 |------------|---------|
 | `client.dom_search()` auf 3c.gmx.net | Hängt (kein CDP Response) |
 | `client.node_describe()` auf 3c.gmx.net | `parentId=None` |
 | `client.node_content_box()` auf 3c.gmx.net | Hängt |
+=======
+---
+
+## 🚫 BANNED: CDP-Only Anti-Patterns (HISTORISCH — 2026-05-21)
+
+> **Diese Bans sind aus V5/V7. Aktueller Code (V15.4) nutzt Playwright-native — CDP wird nur noch als OOPIF-Fallback via Playwright-Browser-WS verwendet.**
+
+| ❌ Verboten (historisch) | Grund |
+|--------------------------|-------|
+| CDP `Runtime.evaluate` auf GMX accessible pages | Gibt `{}` zurück wenn Accessibility-Mode aktiv |
+| CDP `Page.navigate` zu GMX URLs | Triggert Bot-Detection (Akamai/DataDome) |
+>>>>>>> acf9862 (docs: fix outdated docs — V15.4 cleanup)
 | CDP `Input.dispatchKeyEvent` | GMX React-Inputs ignorieren |
 | JS `.click()` auf Delete-Icon | Wicket ignoriert |
 | JS `dispatchEvent(MouseEvent)` auf Delete-Icon | Wicket prüft `isTrusted` |
@@ -222,26 +278,20 @@ chrome --user-data-dir=/tmp/chrome-profile --remote-debugging-port=9222
 
 ## ✅ KORREKTE METHODE (siehe AGENTS.md für Details)
 
-**⚠️ WICHTIG: Chrome NIEMALS killen! pkill -9, SIGKILL, `kill` = ABSOLUT BANNED!**
-Session persists across Chrome restarts via Profile 901 cookies.
+**V15.4 nutzt `chromium.launch()` — KEIN Running Chrome nötig.** Kein `connect_over_cdp()`, kein Profile 901, kein `--remote-debugging-port`. Playwright startet frischen Chromium mit `--remote-debugging-port` auf einem freien Port (9230-9240) für CDP-Fallback.
 
-```bash
-# Chrome STARTEN mit ORIGINAL Profil 901 (KEINE Kopie!)
-nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --user-data-dir="/Users/jeremy/Library/Application Support/Google Chrome" \
-  --profile-directory="Profile 901" \
-  --remote-debugging-port=9222 \
-  --no-first-run --no-default-browser-check \
-  > /tmp/chrome_sinator.log 2>&1 &
-
-sleep 6 && curl -s http://127.0.0.1:9222/json/version
+```python
+# Richtig (V15.4):
+p = await async_playwright().start()
+browser = await p.chromium.launch(headless=False)
+page = await browser.new_page()
 ```
 
-**⚠️ WICHTIG:** NIEMALS Profile kopieren oder nach /tmp verschieben!
-Original-Profil 901 nutzen — Cookies sind an Original-Pfad gebunden (macOS Keychain).
+**NIEMALS:** `connect_over_cdp()` — hängt mit Chrome 148 (Protocol-Mismatch).
 
 ---
 
+<<<<<<< HEAD
 ## ❌ BANNED: CDP JavaScript für Button/Link/Checkbox Klicks
 
 ```python
@@ -412,3 +462,6 @@ await new_pg.goto(iframe_url)
 | Chromium launch via Agent | Chrome bereits offen; App-Tool crashed |
 
 **✅ Erlaubt:** CUA direkt für OS-Level-Klicks (kein LLM-Agent nötig)
+=======
+*Last Updated: 2026-05-31 (V15.4 — ONE Browser, Playwright frames statt CDP OOPIF)*
+>>>>>>> acf9862 (docs: fix outdated docs — V15.4 cleanup)

@@ -37,9 +37,13 @@ ls "/Users/simoneschulze/Library/Application Support/Google Chrome/Profile 73"
 ```bash
 cd ~/dev
 git clone git@github.com:SIN-Rotator/SINator-FireworksAI.git
+<<<<<<< HEAD
 cd SIN-Rotator-SINator-FireworksAI
 
 # ✅ Du bist jetzt im Ordner ~/dev/SIN-Rotator-SINator-FireworksAI
+=======
+cd SINator-fireworksai
+>>>>>>> acf9862 (docs: fix outdated docs — V15.4 cleanup)
 ```
 
 ---
