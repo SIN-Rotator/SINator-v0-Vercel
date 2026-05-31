@@ -98,39 +98,29 @@ cd ~/dev/SINator-dashboard && ./start.sh
 
 ## Client Konfiguration
 
-### OpenCode (`~/.config/opencode/opencode.json`)
+**OpenCode + Hermes Konfiguration →** [SIN-Hermes-Provider-Bundle](https://github.com/SIN-Hermes-Bundles/SIN-Hermes-Provider-Bundle)
 
-```json
-{
-  "provider": {
-    "fireworks-ai": {
-      "options": {
-        "baseURL": "https://sinatorpool-router.delqhi.com/inference/v1",
-        "apiKey": "<DEIN_API_KEY>"
-      }
-    }
-  }
-}
-```
+Dort findest du:
+- `opencode.json` — fertige Provider-Konfiguration mit 12 Fireworks-Modellen (Copy & Paste)
+- Install-Scripts für OpenCode CLI (One-Liner + Emergency Repair)
+- Komplette Install-Doku mit Troubleshooting
 
-### OpenCode Quick Install (One-Liner)
+### Quick-Start OpenCode
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SIN-Rotator/SINator-FireworksAI/main/opencode-config-install.sh | bash
+mkdir -p ~/.config/opencode
+curl -fsSL https://raw.githubusercontent.com/SIN-Hermes-Bundles/SIN-Hermes-Provider-Bundle/main/opencode.json -o ~/.config/opencode/opencode.json
 ```
 
-Mit API Key:
-```bash
-curl -fsSL https://raw.githubusercontent.com/SIN-Rotator/SINator-FireworksAI/main/opencode-config-install.sh | bash -s -- --api-key fw_xxx
-```
-
-### Emergency Repair (Config kaputt?)
+### Quick-Start Hermes
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SIN-Rotator/SINator-FireworksAI/main/opencode-config-repair.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SIN-Hermes-Bundles/SIN-Hermes-Provider-Bundle/main/config/fireworks-router.yaml -o ~/.hermes/config.yaml
+hermes auth add custom:fireworks --type api-key --api-key "$FIREWORKS_AI_API_KEY"
 ```
 
-### Python
+### Python / curl
+
 ```python
 from openai import OpenAI
 client = OpenAI(
@@ -139,30 +129,10 @@ client = OpenAI(
 )
 ```
 
-### Hermes (`~/.hermes/config.yaml`)
-```yaml
-custom_providers:
-  - name: fireworks
-    base_url: https://sinatorpool-router.delqhi.com/inference/v1
-    key_env: FIREWORKS_AI_API_KEY
-```
-
-### curl
 ```bash
 curl https://sinatorpool-router.delqhi.com/inference/v1/models \
   -H "Authorization: Bearer <DEIN_API_KEY>"
 ```
-
----
-
-## Was der Installer macht
-
-1. **Pool Router Config** — `~/.hermes/config.yaml` mit `localhost:9998`
-2. **Pool Router Daemon** — `pool-router.py` via launchd `com.sinator.pool-router`
-3. **10 Proxy Daemons** — `com.sinator.pool-proxy-{8888..8897}` via launchd
-4. **412 Retry Patch** — `error_classifier.py`: 412 + "suspended" -> `billing` + retryable
-5. **UA-Spoof Patch** — `_ua_patch.py` + `import _ua_patch` in `run_agent.py`
-6. **Unlimited max_turns** — `999999` (kein Iterations-Limit)
 
 ## Management
 
