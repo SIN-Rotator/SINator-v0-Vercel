@@ -58,81 +58,81 @@ class GmxService:
             "wolverine", "raptor", "condor", "viper", "scorpion", "spider", "mantis", "beetle",
         ]
 
-def generate_alias_name(self) -> str:
-    adj = random.choice(self.adjectives)
-    noun = random.choice(self.nouns)
-    num = random.randint(100, 999)
-    return f"{adj}-{noun}-{num}"
+    def generate_alias_name(self) -> str:
+        adj = random.choice(self.adjectives)
+        noun = random.choice(self.nouns)
+        num = random.randint(100, 999)
+        return f"{adj}-{noun}-{num}"
 
-# ── Multi-Tab Architecture ───────────────────────────────────────────
+    # ── Multi-Tab Architecture ───────────────────────────────────────────
 
-async def initialize_architecture(self, browser: Browser):
-    """Erstelle isolierte Tabs: work_tab (Alias/FW) + inbox_tab (OTP, bleibt IMMER im Posteingang).
-    inbox_tab wird ERST navigiert nach erfolgreichem Login (via navigate_inbox()).
-    """
-    logger.info("Initialisiere Multi-Tab Architektur...")
-    self.work_tab = await browser.new_page()
-    self.inbox_tab = await browser.new_page()
-    logger.info("Tabs erstellt. inbox_tab wird nach Login navigiert.")
+    async def initialize_architecture(self, browser: Browser):
+        """Erstelle isolierte Tabs: work_tab (Alias/FW) + inbox_tab (OTP, bleibt IMMER im Posteingang).
+        inbox_tab wird ERST navigiert nach erfolgreichem Login (via navigate_inbox()).
+        """
+        logger.info("Initialisiere Multi-Tab Architektur...")
+        self.work_tab = await browser.new_page()
+        self.inbox_tab = await browser.new_page()
+        logger.info("Tabs erstellt. inbox_tab wird nach Login navigiert.")
 
-async def navigate_inbox(self):
-    """Navigiert inbox_tab zum Posteingang (NUR nach Login aufrufen!)."""
-    if self.inbox_tab is None:
-        logger.error("inbox_tab nicht initialisiert")
-        return False
-    logger.info("Navigiere inbox_tab zum Posteingang...")
-    await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded")
-    await asyncio.sleep(5)
-    body = await self.inbox_tab.evaluate("() => document.body.innerText")
-    if "Nicht eingeloggt" in body or ("anmelden" in body.lower()[:200] and "E-Mail" not in body):
-        logger.error("inbox_tab Session ungültig — Login vorher ausführen!")
-        return False
-    logger.info("✅ inbox_tab im Posteingang (session-verifiziert)")
-    return True
+    async def navigate_inbox(self):
+        """Navigiert inbox_tab zum Posteingang (NUR nach Login aufrufen!)."""
+        if self.inbox_tab is None:
+            logger.error("inbox_tab nicht initialisiert")
+            return False
+        logger.info("Navigiere inbox_tab zum Posteingang...")
+        await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded")
+        await asyncio.sleep(5)
+        body = await self.inbox_tab.evaluate("() => document.body.innerText")
+        if "Nicht eingeloggt" in body or ("anmelden" in body.lower()[:200] and "E-Mail" not in body):
+            logger.error("inbox_tab Session ungültig — Login vorher ausführen!")
+            return False
+        logger.info("✅ inbox_tab im Posteingang (session-verifiziert)")
+        return True
 
-async def read_otp_axtree_and_frames(self, sender_keyword: str = "fireworks", timeout: int = 90) -> Dict[str, Any]:
-    """OTP-Suche via Frame-Traversal + Shadow-DOM-Durchdringung.
-    Nutzt inbox_tab (dedizierter GMX-Tab, session-isoliert).
-    Sucht 6-stellige Codes (A-Z0-9) sobald Keyword irgendwo im Frame gefunden.
-    """
-    if self.inbox_tab is None:
-        logger.error("inbox_tab nicht initialisiert — initialize_architecture() vorher aufrufen!")
-        return {"status": "error", "otp_url": None, "error": "inbox_tab missing"}
-    logger.info(f"Starte OTP-Suche via Frame-Traversal (Keyword: {sender_keyword}, inbox_tab)")
-    otp_pattern = re.compile(r'\b[A-Z0-9]{6}\b')
-    start = time.time()
-    while time.time() - start < timeout:
-        for frame in self.inbox_tab.frames:
-            try:
-                texts = await frame.evaluate("""() => {
-                    let results = [];
-                    function traverse(node) {
-                        if (!node) return;
-                        if (node.shadowRoot) { traverse(node.shadowRoot); }
-                        node.childNodes.forEach(child => {
-                            if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim()) {
-                                results.push(child.textContent.trim());
-                            } else if (child.nodeType === Node.ELEMENT_NODE) {
-                                traverse(child);
-                            }
-                        });
-                    }
-                    if (document.body) traverse(document.body);
-                    return results;
-                }""")
-                full_text = " ".join(texts).lower()
-                if sender_keyword.lower() in full_text or "verification" in full_text or "confirm" in full_text:
-                    for chunk in texts:
-                        m = otp_pattern.search(chunk)
-                        if m:
-                            elapsed = time.time() - start
-                            logger.info(f"OTP in Frame {frame.url[:60]} gefunden: {m.group(0)}")
-                            return {"status": "success", "otp_url": None, "otp_code": m.group(0), "execution_time": f"{elapsed:.2f}s"}
-            except Exception:
-                continue
-        await asyncio.sleep(3)
-    logger.warning("Timeout: OTP nicht im inbox_tab gefunden")
-    return {"status": "not_found", "otp_url": None, "otp_code": None, "error": "Timeout"}
+    async def read_otp_axtree_and_frames(self, sender_keyword: str = "fireworks", timeout: int = 90) -> Dict[str, Any]:
+        """OTP-Suche via Frame-Traversal + Shadow-DOM-Durchdringung.
+        Nutzt inbox_tab (dedizierter GMX-Tab, session-isoliert).
+        Sucht 6-stellige Codes (A-Z0-9) sobald Keyword irgendwo im Frame gefunden.
+        """
+        if self.inbox_tab is None:
+            logger.error("inbox_tab nicht initialisiert — initialize_architecture() vorher aufrufen!")
+            return {"status": "error", "otp_url": None, "error": "inbox_tab missing"}
+        logger.info(f"Starte OTP-Suche via Frame-Traversal (Keyword: {sender_keyword}, inbox_tab)")
+        otp_pattern = re.compile(r'\b[A-Z0-9]{6}\b')
+        start = time.time()
+        while time.time() - start < timeout:
+            for frame in self.inbox_tab.frames:
+                try:
+                    texts = await frame.evaluate("""() => {
+                        let results = [];
+                        function traverse(node) {
+                            if (!node) return;
+                            if (node.shadowRoot) { traverse(node.shadowRoot); }
+                            node.childNodes.forEach(child => {
+                                if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim()) {
+                                    results.push(child.textContent.trim());
+                                } else if (child.nodeType === Node.ELEMENT_NODE) {
+                                    traverse(child);
+                                }
+                            });
+                        }
+                        if (document.body) traverse(document.body);
+                        return results;
+                    }""")
+                    full_text = " ".join(texts).lower()
+                    if sender_keyword.lower() in full_text or "verification" in full_text or "confirm" in full_text:
+                        for chunk in texts:
+                            m = otp_pattern.search(chunk)
+                            if m:
+                                elapsed = time.time() - start
+                                logger.info(f"OTP in Frame {frame.url[:60]} gefunden: {m.group(0)}")
+                                return {"status": "success", "otp_url": None, "otp_code": m.group(0), "execution_time": f"{elapsed:.2f}s"}
+                except Exception:
+                    continue
+            await asyncio.sleep(3)
+        logger.warning("Timeout: OTP nicht im inbox_tab gefunden")
+        return {"status": "not_found", "otp_url": None, "otp_code": None, "error": "Timeout"}
 
 # ── Playwright Connection ────────────────────────────────────────────
 

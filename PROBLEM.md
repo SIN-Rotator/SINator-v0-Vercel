@@ -4,7 +4,26 @@
 - **GMX Login** — ✅ Fixed (prompt=none → prompt=login JS history.replaceState)
 - **GMX Alias Delete/Create** — ✅ Working
 - **Fireworks Signup** — ✅ Works (account created, verify page shown)
-- **OTP / Verify-Email lesen** — ❌ Broken
+- **OTP / Verify-Email lesen** — ✅ Fixed (siehe Root Cause unten)
+
+## ✅ ROOT CAUSE (gefunden & gefixt)
+In `agent_toolbox/core/gmx_service.py` waren vier Methoden durch fehlerhafte
+Einrückung (Spalte 0 statt 4 Spaces) **aus der Klasse `GmxService` herausgefallen**
+und damit zu reinen Modul-Funktionen geworden:
+
+- `generate_alias_name()`
+- `initialize_architecture()`   → Multi-Tab-Setup (work_tab + inbox_tab)
+- `navigate_inbox()`            → dedizierter Inbox-Tab
+- `read_otp_axtree_and_frames()` → eigentlicher OTP-Reader
+
+Dadurch schlugen alle Aufrufe wie `self.generate_alias_name()`,
+`gmx.initialize_architecture(browser)`, `gmx.navigate_inbox()` und
+`gmx.read_otp_axtree_and_frames(...)` mit `AttributeError` fehl. Das erklärt
+**beide** Symptome: das OTP-Lesen UND "Tab bleibt nicht im Posteingang" (Problem 2),
+da die komplette Multi-Tab-Architektur unerreichbar war.
+
+**Fix:** Zeilen 61–135 wieder um 4 Spaces in die Klasse eingerückt. Die Methoden
+gehören jetzt wieder zu `GmxService` (per AST verifiziert, Datei kompiliert).
 
 ## Symptom
 Nach Fireworks-Signup wird `read_otp_via_playwright()` auf `navigator.gmx.net/mail` aufgerufen.
