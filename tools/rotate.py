@@ -56,6 +56,7 @@ async def main():
     page = await browser.new_page()
     logger.info(f"✅ Chromium launched — ONE Browser for entire rotation")
 
+    alias = None
     try:
         from gmx_service import GmxService
         gmx = GmxService()
