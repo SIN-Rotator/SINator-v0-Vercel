@@ -258,7 +258,7 @@ scripts/
 └── pool-router.plist           LaunchAgent
 
 tools/
-├── rotate.py                   V8: ONE Browser Rotation
+├── rotate.py                   V8.1: TRUE ONE Browser (page-native, no CDP)
 ├── batch_rotate.py             Batch N Rotations
 ├── gmx_alias_tool.py          GMX Alias CLI
 ├── open_gmx_email.py          GMX Email Opener
