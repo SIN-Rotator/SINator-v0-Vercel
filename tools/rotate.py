@@ -169,17 +169,14 @@ async def main():
         else:
             logger.warning(f"OTP nicht gefunden: {otp_result.get('error')}")
 
-        # Step 4: Onboarding (session is set by verify_account — no re-login needed)
-        logger.info("=== Fireworks Onboarding (no re-login after OTP confirm) ===")
-        from sin_browser_tools.tools.navigation import browser_get_url
-        from sin_browser_tools.tools.interaction import browser_click_by_text
-        from fireworks_service import _playwright_onboarding
-        url = (await browser_get_url())["url"]
-        if 'onboarding' in url:
-            await _playwright_onboarding()
-            logger.info("Onboarding complete")
+        # Step 4: Login + Onboarding (verify URL does NOT establish session)
+        logger.info("=== Fireworks Login + Onboarding ===")
+        from fireworks_service import login_fireworks
+        login_result = await login_fireworks(alias, args.password)
+        if login_result.get('status') == 'success':
+            logger.info(f"Login OK: {login_result.get('steps_completed', [])}")
         else:
-            logger.info(f"Already past onboarding, URL: {url[:60]}")
+            logger.info(f"Login: {login_result.get('status')} - {login_result.get('error', '')}")
 
         # Step 5: API Key
         logger.info("=== API Key ===")
