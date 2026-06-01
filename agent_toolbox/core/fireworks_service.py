@@ -416,85 +416,132 @@ async def _playwright_onboarding() -> None:
     Page 1: Account ID (max 20 chars), First/Last Name, Terms checkbox → Continue
     Page 2: Use case checkboxes (Prototype, Flexible, Conversational, Search, Agentic) → Submit
 
-    Uses native React value setter for controlled inputs (browser_fill doesn't
-    clear existing React state for CSS selectors). Account ID is 'sin' + 8
-    random chars = 11 chars (under 20-char limit).
-
-    After submit, waits up to 15s for redirect to /home or /account.
-    Falls back to force-navigate to API keys page if no redirect detected.
+    Strategy (V18.4 hybrid):
+    1. Click "Reject All" on cookie banner (so it doesn't cover the form)
+    2. Fill fields via browser_type (with delay=30ms) — lets React pick up keystrokes
+       naturally instead of bypassing with a raw value-setter that doesn't trigger
+       React state updates reliably
+    3. Use 4-strategy checkbox clicker (input[aria-label], [role=checkbox], label,
+       :has-text) for Terms + use cases — Fireworks uses custom React checkboxes
+    4. Continue / Submit via button click (force), fallback to form.requestSubmit()
+       + Enter key
+    5. Wait for redirect, fallback to force-navigate to /settings/users/api-keys
     """
     from sin_browser_tools.tools.interaction import (
-        browser_fill, browser_click_by_text, browser_click_checkbox_by_text,
+        browser_type, browser_click_by_text, browser_click_checkbox_by_text,
     )
     from sin_browser_tools.tools.navigation import browser_get_url, browser_navigate, browser_press
     from sin_browser_tools.tools.extraction import browser_console
 
-    # ── DIAGNOSTIC: capture screenshots before each step ───────────────────
-    import os
-    diag_dir = "/tmp/onboarding-diag"
-    os.makedirs(diag_dir, exist_ok=True)
-    diag_step = [0]
+    # ── Step 1: Reject cookie banner so it doesn't block the form ──────────
+    try:
+        await browser_click_by_text("Reject All", role="button")
+        await asyncio.sleep(0.5)
+    except Exception:
+        # Banner might be cky-* overlays — strip via JS
+        await browser_console("""document.querySelectorAll('.cky-overlay,.cky-consent-container,.cky-modal,[class*="cky-"]').forEach(e => e.remove()); document.body.style.overflow = 'visible';""")
+        await asyncio.sleep(0.5)
+    logger.info("Cookie banner handled")
 
-    async def _shot(label):
-        diag_step[0] += 1
-        path = f"{diag_dir}/step{diag_step[0]:02d}-{label}.png"
-        try:
-            from sin_browser_tools.core import manager
-            await manager.page.screenshot(path=path)
-            logger.info(f"DIAG shot: {path}")
-        except Exception as e:
-            logger.warning(f"DIAG shot failed: {e}")
+    # ── Step 2: Fill text fields via browser_type (delay=30ms triggers React) ─
+    import random, string
 
-    await _shot("00_onboarding_start")
-
+    # Account ID — sin + 8 random = 11 chars (under 20-char limit)
     has_aid = int((await browser_console("document.querySelectorAll('input[name=accountId]').length"))["result"])
     if has_aid > 0:
-        import random, string
         aid = "sin" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-        await browser_console(f"""(() => {{
-            var inp = document.querySelector('input[name="accountId"]');
-            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-            setter.call(inp, '{aid}');
-            inp.dispatchEvent(new Event('input', {{bubbles: true}}));
-            inp.dispatchEvent(new Event('change', {{bubbles: true}}));
-        }})()""")
+        try:
+            await browser_type('input[name="accountId"]', aid)
+        except Exception as e:
+            logger.warning(f"browser_type accountId failed: {e} — falling back to console setter")
+            await browser_console(f"""(() => {{
+                var inp = document.querySelector('input[name="accountId"]');
+                var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                setter.call(inp, '{aid}');
+                inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+            }})()""")
         await asyncio.sleep(0.3)
-    await _shot("01_after_accountid")
+        logger.info(f"Account ID filled: {aid}")
 
+    # First name
     has_fn = int((await browser_console("document.querySelectorAll('input[name=firstName]').length || document.querySelectorAll('input[name=first]').length"))["result"])
     if has_fn > 0:
-        await browser_console("""(() => {
-            var inp = document.querySelector('input[name="firstName"]') || document.querySelector('input[name="first"]');
-            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-            setter.call(inp, 'Super');
-            inp.dispatchEvent(new Event('input', {bubbles: true}));
-            inp.dispatchEvent(new Event('change', {bubbles: true}));
-        })()""")
+        try:
+            await browser_type('input[name="firstName"]', "Super")
+        except Exception:
+            try:
+                await browser_type('input[name="first"]', "Super")
+            except Exception as e:
+                logger.warning(f"browser_type firstName failed: {e}")
         await asyncio.sleep(0.3)
+        logger.info("First name filled")
 
+    # Last name
     has_ln = int((await browser_console("document.querySelectorAll('input[name=lastName]').length || document.querySelectorAll('input[name=last]').length"))["result"])
     if has_ln > 0:
-        await browser_console("""(() => {
-            var inp = document.querySelector('input[name="lastName"]') || document.querySelector('input[name="last"]');
-            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-            setter.call(inp, 'Cheetah');
-            inp.dispatchEvent(new Event('input', {bubbles: true}));
-            inp.dispatchEvent(new Event('change', {bubbles: true}));
-        }})()""")
+        try:
+            await browser_type('input[name="lastName"]', "Cheetah")
+        except Exception:
+            try:
+                await browser_type('input[name="last"]', "Cheetah")
+            except Exception as e:
+                logger.warning(f"browser_type lastName failed: {e}")
         await asyncio.sleep(0.3)
-    await _shot("02_after_name_fields")
+        logger.info("Last name filled")
 
-    tc = await browser_click_checkbox_by_text("Terms of Service")
-    if not tc.get("success"):
-        tc2 = await browser_click_checkbox_by_text("I agree")
-        if not tc2.get("success"):
-            await browser_console("""var b=document.querySelectorAll('button'); for(var i=0;i<b.length;i++){var r=b[i].getAttribute('role')||'';var a=b[i].getAttribute('aria-checked');if(r==='checkbox'||a!==null){b[i].click();return;}}""")
-            await asyncio.sleep(0.5)
-    await _shot("03_after_terms")
+    # ── Step 3: 4-strategy checkbox clicker (V18.4 fallback chain) ──────────
+    async def _click_checkbox_any_strategy(match_text: str) -> bool:
+        """Try multiple strategies to click a custom-React checkbox. Returns True on success."""
+        mt = match_text.lower()
+        # 1. input[type="checkbox"] with aria-label containing match
+        r = await browser_console(f"""(() => {{
+            var inputs = document.querySelectorAll('input[type="checkbox"]');
+            for (var i=0; i<inputs.length; i++) {{
+                var lbl = (inputs[i].getAttribute('aria-label') || '').toLowerCase();
+                if (lbl.indexOf({mt!r}) !== -1) {{ inputs[i].click(); return 'input'; }}
+            }}
+            // 2. [role="checkbox"] with aria-label
+            var els = document.querySelectorAll('[role="checkbox"]');
+            for (var j=0; j<els.length; j++) {{
+                var l = (els[j].getAttribute('aria-label') || '').toLowerCase();
+                if (l.indexOf({mt!r}) !== -1) {{ els[j].click(); return 'role'; }}
+            }}
+            // 3. Label text containing match
+            var labels = document.querySelectorAll('label');
+            for (var k=0; k<labels.length; k++) {{
+                if (labels[k].textContent.toLowerCase().indexOf({mt!r}) !== -1) {{
+                    var cb = labels[k].querySelector('input[type="checkbox"], [role="checkbox"]') || labels[k];
+                    cb.click(); return 'label';
+                }}
+            }}
+            return 'not_found';
+        }})()""")
+        result = r.get("result", "not_found")
+        if result != "not_found":
+            logger.info(f"Checkbox '{match_text}' clicked via {result}")
+            return True
+        # 4. Last resort: SIN-browser-tool browser_click_checkbox_by_text
+        try:
+            r2 = await browser_click_checkbox_by_text(match_text)
+            if r2.get("success"):
+                logger.info(f"Checkbox '{match_text}' clicked via browser_click_checkbox_by_text")
+                return True
+        except Exception:
+            pass
+        logger.warning(f"Checkbox '{match_text}' NOT clicked")
+        return False
 
+    # Terms checkbox
+    if not await _click_checkbox_any_strategy("agree"):
+        await _click_checkbox_any_strategy("terms")
+    await asyncio.sleep(0.3)
+
+    # ── Step 4: Continue (Page 1 → Page 2) ─────────────────────────────────
     try:
         await browser_click_by_text("Continue", role="button")
     except Exception:
+        # Fallback: dispatchEvent on any button containing "Continue"
         await browser_console("""(() => {
             var b = document.querySelectorAll('button');
             for(var i=0;i<b.length;i++){
@@ -508,8 +555,8 @@ async def _playwright_onboarding() -> None:
         })()""")
         logger.info("Continue clicked via JS dispatchEvent (disabled bypass)")
     await asyncio.sleep(3)
-    await _shot("04_after_continue")
 
+    # ── Step 5: Use-case checkboxes (Page 2) ─────────────────────────────────
     for uc in [
         "Prototype with open models",
         "Flexible capacity for experimentation",
@@ -517,16 +564,11 @@ async def _playwright_onboarding() -> None:
         "Search",
         "Agentic AI",
     ]:
-        r = await browser_click_checkbox_by_text(uc)
-        if not r.get("success"):
-            try:
-                await browser_click_by_text(uc, role="checkbox")
-            except Exception:
-                pass
-            await asyncio.sleep(0.2)
+        if not await _click_checkbox_any_strategy(uc):
+            logger.warning(f"Use-case '{uc}' not found")
         await asyncio.sleep(0.2)
-    await _shot("05_after_usecases")
 
+    # ── Step 6: Submit (Page 2 → home/settings) ─────────────────────────────
     try:
         await browser_click_by_text("Submit", role="button")
     except Exception:
@@ -537,9 +579,8 @@ async def _playwright_onboarding() -> None:
             except Exception:
                 continue
     await asyncio.sleep(2)
-    await _shot("06_after_submit")
 
-    # If still on onboarding, the button click was disabled. Try form.requestSubmit() + Enter.
+    # Fallback: still on /onboarding → form.requestSubmit() + Enter
     url = (await browser_get_url())["url"]
     if 'onboarding' in url:
         await browser_console("""(() => {
@@ -557,8 +598,6 @@ async def _playwright_onboarding() -> None:
             await browser_press("Enter")
             logger.info("Enter key sent as Submit fallback (disabled bypass)")
             await asyncio.sleep(3)
-    await asyncio.sleep(1)
-    await _shot("07_after_requestsubmit_enter")
 
     for _ in range(15):
         await asyncio.sleep(1)
