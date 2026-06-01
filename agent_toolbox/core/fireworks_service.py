@@ -541,6 +541,31 @@ async def _playwright_onboarding() -> None:
         await _click_checkbox_any_strategy("terms")
     await asyncio.sleep(0.3)
 
+    # DIAG: screenshot before Continue
+    try:
+        from sin_browser_tools.core import manager
+        os.makedirs("/tmp/onboarding-diag", exist_ok=True)
+        await manager.page.screenshot(path="/tmp/onboarding-diag/before-continue.png")
+        # Log Continue button state
+        btn_state = await browser_console("""(() => {
+            var b = document.querySelectorAll('button');
+            for (var i=0; i<b.length; i++) {
+                var t = (b[i].textContent || '').trim();
+                if (t.indexOf('Continue') !== -1 || t.indexOf('Next') !== -1) {
+                    return {
+                        text: t,
+                        disabled: b[i].disabled || b[i].getAttribute('aria-disabled') === 'true',
+                        visible: b[i].offsetParent !== null,
+                        type: b[i].type
+                    };
+                }
+            }
+            return 'no_continue_button';
+        })()""")
+        logger.info(f"DIAG Continue button state: {btn_state}")
+    except Exception as e:
+        logger.warning(f"DIAG: {e}")
+
     # ── Step 4: Continue (Page 1 → Page 2) ─────────────────────────────────
     # First check the URL — if validation fails the page may not be ready
     cur_url = (await browser_get_url())["url"]
@@ -576,6 +601,12 @@ async def _playwright_onboarding() -> None:
     # Verify we left page 1
     after_url = (await browser_get_url())["url"]
     logger.info(f"After Continue: url={after_url}")
+    try:
+        from sin_browser_tools.core import manager
+        os.makedirs("/tmp/onboarding-diag", exist_ok=True)
+        await manager.page.screenshot(path="/tmp/onboarding-diag/after-continue.png")
+    except Exception:
+        pass
 
     # ── Step 5: Use-case checkboxes (Page 2) ─────────────────────────────────
     for uc in [
