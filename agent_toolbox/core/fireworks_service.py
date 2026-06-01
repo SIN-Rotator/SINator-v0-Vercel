@@ -336,15 +336,9 @@ async def login_fireworks(email: str, password: str, **kwargs) -> Dict[str, Any]
     await browser_fill('input[name="email"]', email)
     steps.append("email_filled")
 
-    try:
-        await browser_click_by_text("Next", role="button")
-    except Exception:
-        for txt in ("Next", "Continue", "Submit"):
-            try:
-                await browser_click_by_text(txt, role="button")
-                break
-            except Exception:
-                continue
+    from sin_browser_tools.tools.navigation import browser_press
+    await browser_press("Enter")
+    logger.info("Login email submitted via Enter key")
     await asyncio.sleep(2)
 
     pw_count = int((await browser_console("document.querySelectorAll('input[type=password]').length"))["result"])
