@@ -61,6 +61,10 @@ MAX_FAILURES = int(os.environ.get("POOL_ROUTER_MAX_FAILURES", "3"))
 CF_WORKER_URL = os.environ.get("CF_WORKER_URL", "").rstrip("/")
 CF_AUTH_TOKEN = os.environ.get("SINATOR_AUTH_TOKEN", "").strip()
 
+# Auth token for incoming requests (same as proxy's SINATOR_AUTH_TOKEN).
+# All requests EXCEPT /health must carry `Authorization: Bearer {AUTH_TOKEN}`.
+AUTH_TOKEN = os.environ.get("SINATOR_AUTH_TOKEN", "").strip()
+
 # Timestamp-based failure tracking: {pool_idx: [timestamp, timestamp, ...]}
 _pool_failure_timestamps = {i: [] for i in range(len(POOLS))}
 _lock = threading.Lock()
@@ -114,6 +118,23 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         print(f"[PoolRouter] {format % args}", flush=True)
 
+    # ── Auth ──────────────────────────────────────────────────────────────
+    def _is_authenticated(self) -> bool:
+        if not AUTH_TOKEN:
+            return True
+        return self.headers.get("Authorization", "") == f"Bearer {AUTH_TOKEN}"
+
+    def _send_401(self):
+        self.send_response(401)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps({
+            "error": "unauthorized",
+            "message": "Invalid or missing auth token",
+        }).encode())
+
+    # ── CF Fallback ───────────────────────────────────────────────────────
     def _try_cf_fallback(self, method, path, body=None, headers=None):
         """Issue #24: forward to the Cloudflare Worker when local pools are gone.
 
@@ -246,6 +267,7 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/health":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             status = {
                 "status": "ok",
@@ -255,6 +277,8 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
             }
             self.wfile.write(json.dumps(status).encode())
             return
+        if not self._is_authenticated():
+            return self._send_401()
         self._proxy("GET")
 
     def do_POST(self):
@@ -268,6 +292,9 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def _proxy(self, method):
+        if not self._is_authenticated():
+            return self._send_401()
+
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else None
 
