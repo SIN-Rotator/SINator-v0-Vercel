@@ -1,3 +1,7 @@
+"""SQLite-backed Vercel API key pool with LRU and cooldown rotation.
+
+Docs: pool_manager.doc.md
+"""
 import sqlite3
 from datetime import datetime, timedelta
 

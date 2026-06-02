@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""CLI to import Vercel API keys into the pool SQLite database.
+
+Docs: add_keys.doc.md
+"""
 import sqlite3
 import sys
 from datetime import datetime

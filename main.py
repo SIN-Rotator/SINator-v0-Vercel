@@ -1,3 +1,7 @@
+"""Vercel AI Gateway API key pool proxy with auto-failover.
+
+Docs: main.doc.md
+"""
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
@@ -20,10 +24,13 @@ app = FastAPI(title="SINator-VercelPool", description="Intelligenter API Key Poo
 import os
 OUTBOUND_PROXY = os.getenv("OUTBOUND_PROXY") or None
 
-# Ziel-URL anpassen (z.B. Vercel AI Gateway oder direkter OpenAI-Endpunkt über Vercel)
+# Vercel AI Gateway (NICHT api.vercel.ai — letzteres ist für Deployments und gibt
+# DEPLOYMENT_NOT_FOUND für chat endpoints). ai-gateway.vercel.sh ist der OpenAI-kompatible
+# Endpunkt für LLM-Inferenz.
 TARGET_BASE_URL = "https://ai-gateway.vercel.sh"
 
 # Wie lange ein Key bei einem transienten Rate-Limit kurz pausiert wird (Minuten).
+# 2 Min ist genug für Free-Tier Rate-Limits (Vercel resettet nach ~30s, wir geben Puffer).
 RATE_LIMIT_COOLDOWN_MINUTES = 2
 
 # --- Fehler-Klassifizierung -------------------------------------------------
@@ -199,6 +206,9 @@ async def proxy_request(path: str, request: Request):
             }
             
             async def stream_body():
+                # aiter_bytes() (nicht aiter_raw!) — httpx dekomprimiert gzip automatisch.
+                # Mit aiter_raw() würde der Client gzip-Binary (z.B. 0x1f8b08...) sehen
+                # statt dekodiertes JSON/SSE.
                 try:
                     async for chunk in resp.aiter_bytes():
                         yield chunk
