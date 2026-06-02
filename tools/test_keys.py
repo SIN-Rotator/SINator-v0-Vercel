@@ -218,7 +218,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-  %(prog)s                       # test all 256 keys (~5s, $0.001 cost)
+  %(prog)s                       # test all pool keys (261 total, ~5s, $0.001 cost)
   %(prog)s --only-suspended      # re-verify currently suspended (find false positives)
   %(prog)s --only-available      # verify available keys aren't actually dead
   %(prog)s --key <id>            # test single key
