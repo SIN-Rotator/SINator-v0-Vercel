@@ -21,7 +21,7 @@ import os
 OUTBOUND_PROXY = os.getenv("OUTBOUND_PROXY") or None
 
 # Ziel-URL anpassen (z.B. Vercel AI Gateway oder direkter OpenAI-Endpunkt über Vercel)
-TARGET_BASE_URL = "https://api.vercel.ai"
+TARGET_BASE_URL = "https://ai-gateway.vercel.sh"
 
 # Wie lange ein Key bei einem transienten Rate-Limit kurz pausiert wird (Minuten).
 RATE_LIMIT_COOLDOWN_MINUTES = 2
@@ -199,9 +199,8 @@ async def proxy_request(path: str, request: Request):
             }
             
             async def stream_body():
-                # Client + Response erst schließen, wenn der Stream komplett durch ist.
                 try:
-                    async for chunk in resp.aiter_raw():
+                    async for chunk in resp.aiter_bytes():
                         yield chunk
                 finally:
                     await resp.aclose()
