@@ -34,15 +34,21 @@ TARGET_BASE_URL = "https://ai-gateway.vercel.sh"
 RATE_LIMIT_COOLDOWN_MINUTES = 2
 
 # --- Fehler-Klassifizierung -------------------------------------------------
-# Wir müssen ZWEI Fälle sauber unterscheiden:
+# Wir müssen DREI Fälle sauber unterscheiden:
 #
 # 1) CREDITS AUFGEBRAUCHT  -> Key 31 Tage archivieren (mark_key_long_cooldown)
 #    Typisch: Billing/Quota/Spending-Limit erreicht. Warten bringt kurzfristig nichts.
 #
 # 2) RATE-LIMIT / FREE-TIER WARTEN -> Key nur kurz pausieren (mark_key_short_cooldown)
-#    Typisch: "Free tier requests are rate-limited", "retrying in 25s", "upgrade to paid".
+#    Typisch: "Free tier requests are rate-limited", "retrying in 25s", "too many requests".
 #    Credits sind NICHT aufgebraucht – man müsste nur warten. Wir warten NICHT,
 #    sondern swappen sofort den nächsten Key und holen diesen Key in 2 Min zurück.
+#
+# 3) MODEL RESTRICTED (Free-Tier-Block für bestimmte Modelle) -> SOFORT STOPPEN
+#    Typisch: "Free tier users do not have access to this model. Upgrade to paid credits".
+#    Vercel blockiert das MODELL, nicht den Key — alle Keys bekommen denselben 403.
+#    Wir dürfen NICHT retryen (verschwendet Keys) und NICHT den Key strafen
+#    (er ist technisch OK). Antwort sofort 1:1 an Client zurückgeben.
 
 # Phrasen, die eindeutig auf AUFGEBRAUCHTE CREDITS / BILLING hindeuten -> 31 Tage
 CREDITS_EXHAUSTED_PHRASES = [
@@ -59,13 +65,14 @@ CREDITS_EXHAUSTED_PHRASES = [
 ]
 
 # Phrasen, die auf ein transientes RATE-LIMIT hindeuten (Credits noch da) -> kurz
+# WICHTIG: "upgrade to paid" wurde entfernt — das matchte fälschlich die
+# RestrictedModelsError-Antwort ("...Upgrade to paid credits at...") und strafte
+# gesunde Keys mit 2-Min-Cooldown. Echte Rate-Limits kommen mit 429-Status und
+# "rate-limited" / "too many requests" / "retry" / "slow down" / "temporarily".
 RATE_LIMIT_PHRASES = [
     "rate-limited",
     "rate limited",
     "rate limit",
-    "free tier",
-    "free-tier",
-    "upgrade to paid",
     "too many requests",
     "retry",
     "try again",
@@ -73,30 +80,53 @@ RATE_LIMIT_PHRASES = [
     "temporarily",
 ]
 
+# Phrasen, die auf einen MODELL-SEITIGEN BLOCK hindeuten (Free-Tier-Beschränkung
+# für bestimmte Modelle wie alibaba/qwen3.7-*). Antwort kommt mit 403 + "no_providers_available"
+# oder dem Type-Token "RestrictedModelsError". Hier darf der Key NICHT bestraft
+# werden — das Problem liegt am Modell, nicht am Key.
+MODEL_RESTRICTED_PHRASES = [
+    "no_providers_available",
+    "restrictedmodelserror",
+    "do not have access to this model",
+    "free tier users do not have access",
+]
+
 
 def classify_error(status_code: int, body_text: str) -> str:
     """
-    Liefert: 'credits' (31 Tage), 'rate_limit' (kurz) oder 'none' (kein Pool-Fehler).
-    Reihenfolge ist wichtig: Credits werden VOR Rate-Limit geprüft, da eine
-    Antwort beide Wörter enthalten kann (z.B. 'quota' + 'rate limit').
+    Liefert einen von vier Werten:
+      'credits'         -> 31-Tage-Cooldown (Billing aufgebraucht)
+      'rate_limit'      -> Kurz-Cooldown (transientes Limit)
+      'model_restricted' -> SOFORT ABBRUCH, Key nicht bestrafen (Modell-Block)
+      'none'            -> kein Pool-Fehler (z.B. 400 Bad Request)
+
+    Reihenfolge ist wichtig: model_restricted wird ZUERST geprüft (VOR credits/rate_limit),
+    weil die Antwort Phrasen wie "free tier" und "upgrade to paid" enthält, die
+    sonst falsche Klassifizierung auslösen würden.
     """
     text = (body_text or "").lower()
 
-    # 1) Credits/Billing zuerst -> langer Cooldown
+    # 1) Modell-seitiger Block ZUERST — der Key ist gesund, alle würden scheitern
+    if any(p in text for p in MODEL_RESTRICTED_PHRASES):
+        return "model_restricted"
+
+    # 2) Credits/Billing zuerst -> langer Cooldown
     if any(p in text for p in CREDITS_EXHAUSTED_PHRASES):
         return "credits"
 
-    # 2) 402 Payment Required ist fast immer ein echtes Billing-/Credit-Problem
+    # 3) 402 Payment Required ist fast immer ein echtes Billing-/Credit-Problem
     if status_code == 402:
         return "credits"
 
-    # 3) Transientes Rate-Limit -> kurzer Cooldown
+    # 4) Transientes Rate-Limit -> kurzer Cooldown
     if status_code == 429:
         return "rate_limit"
     if any(p in text for p in RATE_LIMIT_PHRASES):
         return "rate_limit"
 
-    # 4) 403 ist mehrdeutig: oft gesperrter/abgelaufener Key -> sicherheitshalber lang
+    # 5) 403 ohne RestrictedModelsError ist mehrdeutig: oft gesperrter/abgelaufener
+    # Key -> sicherheitshalber lang. (Durch Check #1 sind RestrictedModelsError-403
+    # bereits abgefangen.)
     if status_code == 403:
         return "credits"
 
@@ -173,20 +203,35 @@ async def proxy_request(path: str, request: Request):
                 await client.aclose()
                 
                 error_kind = classify_error(resp.status_code, error_body)
-                
+
+                if error_kind == "model_restricted":
+                    # Modell-seitiger Block (z.B. alibaba/qwen3.7-* ist Free-Tier-restricted).
+                    # Der Key ist GESUND — das Problem liegt am Modell und betrifft ALLE Keys.
+                    # Wir brechen den Retry-Loop ab, geben den originalen 403-Error 1:1 an
+                    # den Client zurück und bestrafen den Key NICHT (kein Cooldown).
+                    response_headers = {
+                        k: v for k, v in resp.headers.items()
+                        if k.lower() not in ("content-encoding", "transfer-encoding", "content-length")
+                    }
+                    return Response(
+                        content=error_body.encode("utf-8"),
+                        status_code=resp.status_code,
+                        headers=response_headers,
+                    )
+
                 if error_kind == "credits":
                     # Credits aufgebraucht / Billing -> Key 31 Tage archivieren
                     mark_key_long_cooldown(api_key)
                     last_error = error_body
                     continue  # Sofortiger interner Retry mit dem nächsten Key!
-                
+
                 if error_kind == "rate_limit":
                     # Transientes Rate-Limit -> Key nur kurz pausieren, NICHT warten.
                     # Wir swappen sofort auf den nächsten Key, damit opencode weiterläuft.
                     mark_key_short_cooldown(api_key, minutes=RATE_LIMIT_COOLDOWN_MINUTES)
                     last_error = error_body
                     continue  # Sofortiger interner Retry mit dem nächsten Key!
-                
+
                 # Nicht retry-barer Fehler (z.B. 400 Bad Request) -> direkt zurückgeben
                 response_headers = {
                     k: v for k, v in resp.headers.items()

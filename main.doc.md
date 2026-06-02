@@ -39,9 +39,10 @@ Wird konsumiert von: opencode (Provider `vercel-pool` → `http://localhost:8001
 - Client wartet NICHT auf Retry-After — Pool swapt transparent
 - 10 Versuche decken selbst Worst-Case (alle Keys in Cooldown) ab
 
-### 4. Zwei Cooldown-Modi
+### 4. Drei Cooldown-Modi (NEU seit v1.1)
 - **Long (31 Tage):** Credits aufgebraucht (`402 Payment Required`, "insufficient credits", "quota exceeded")
-- **Short (2 Min):** Transientes Rate-Limit ("rate-limited", "upgrade to paid") — Key ist nicht tot, nur überlastet
+- **Short (2 Min):** Transientes Rate-Limit ("rate-limited", "too many requests", `429`) — Key ist nicht tot, nur überlastet
+- **Sofort-Abbruch (kein Cooldown):** Modell-seitiger Block (`no_providers_available`, `RestrictedModelsError`, "Free tier users do not have access to this model"). Der Key ist gesund, das Problem liegt am Modell. V1.0-Bug: "upgrade to paid" matchte fälschlich in `RATE_LIMIT_PHRASES` und bestrafte 10 Keys pro Restricted-Request. V1.1: separate `MODEL_RESTRICTED_PHRASES` + sofortiger Return.
 
 ## API Endpoints
 
@@ -54,10 +55,11 @@ Wird konsumiert von: opencode (Provider `vercel-pool` → `http://localhost:8001
 
 ## Fehler-Klassifizierung (`classify_error`)
 
-Reihenfolge ist wichtig (Credits werden VOR Rate-Limit geprüft):
-1. **Credits** (`insufficient_credits`, `spending_limit`, `quota_exceeded`, `402`) → 31 Tage
-2. **Rate-Limit** (`rate_limited`, `free_tier`, `429`) → 2 Min
-3. **403** (mehrdeutig: Key gesperrt oder abgelaufen) → konservativ 31 Tage
+Reihenfolge ist KRITISCH (model_restricted wird ZUERST geprüft, weil "free tier" + "upgrade to paid" sonst falsche Pfade triggern):
+1. **`model_restricted`** (`no_providers_available`, `RestrictedModelsError`, "Free tier users do not have access") → SOFORT ABBRUCH, Key nicht bestrafen
+2. **Credits** (`insufficient_credits`, `spending_limit`, `quota_exceeded`, `402`) → 31 Tage
+3. **Rate-Limit** (`rate_limited`, `too_many_requests`, `retry`, `429`) → 2 Min
+4. **403** (mehrdeutig: Key gesperrt oder abgelaufen, aber KEIN RestrictedModelsError mehr) → konservativ 31 Tage
 
 ## Usage
 
