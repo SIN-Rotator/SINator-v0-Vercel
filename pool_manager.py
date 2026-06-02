@@ -9,14 +9,16 @@ DB_PATH = "vercel_pool.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")  # WAL für bessere Concurrency
+    conn.execute("PRAGMA busy_timeout=5000")  # 5s Wartezeit bei Lock
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS api_keys (
-            key TEXT PRIMARY KEY,
-            status TEXT DEFAULT 'active', -- 'active' oder 'cooldown'
-            cooldown_until TEXT,          -- ISO Format Datum
-            cooldown_reason TEXT,         -- 'credits_exhausted' (31d) oder 'rate_limited' (kurz)
-            last_used TEXT
-        )
+    CREATE TABLE IF NOT EXISTS api_keys (
+        key TEXT PRIMARY KEY,
+        status TEXT DEFAULT 'active', -- 'active' oder 'cooldown'
+        cooldown_until TEXT, -- ISO Format Datum
+        cooldown_reason TEXT, -- 'credits_exhausted' (31d) oder 'rate_limited' (kurz)
+        last_used TEXT
+    )
     """)
     # Migration: Spalte nachrüsten, falls DB aus älterer Version stammt
     cols = [r[1] for r in conn.execute("PRAGMA table_info(api_keys)").fetchall()]
@@ -26,26 +28,26 @@ def init_db():
     conn.close()
 
 def get_active_key():
-    conn = sqlite3.connect(DB_PATH)
+    """ATOMISCH: Holt UND markiert den am längsten nicht genutzten aktiven Key in EINEM Query.
+    Verhindert Race Conditions bei parallelen Requests (mehrere Requests = gleicher Key).
+    Nutzt UPDATE ... RETURNING (SQLite 3.35+) — garantiert dass JEDER Request einen
+    verschiedenen Key bekommt.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     cursor = conn.cursor()
-    # Hole den am längsten nicht genutzten aktiven Key (Least Recently Used)
     cursor.execute("""
-        SELECT key FROM api_keys 
-        WHERE status = 'active' 
-        ORDER BY last_used ASC 
+    UPDATE api_keys
+    SET last_used = ?
+    WHERE rowid = (
+        SELECT rowid FROM api_keys
+        WHERE status = 'active'
+        ORDER BY last_used ASC
         LIMIT 1
-    """)
+    )
+    RETURNING key
+    """, (datetime.now().isoformat(),))
     result = cursor.fetchone()
-    
-    if result:
-        # Update last_used timestamp
-        cursor.execute("""
-            UPDATE api_keys 
-            SET last_used = ? 
-            WHERE key = ?
-        """, (datetime.now().isoformat(), result[0]))
-        conn.commit()
-    
+    conn.commit()
     conn.close()
     return result[0] if result else None
 
@@ -68,24 +70,25 @@ def mark_key_long_cooldown(key: str):
     print(f"🔴 Key {key[:8]}... CREDITS AUFGEBRAUCHT → 31-Tage-Archiv bis {cooldown_date[:10]}")
 
 
-def mark_key_short_cooldown(key: str, minutes: int = 2):
+def mark_key_short_cooldown(key: str, seconds: int = 5):
     """
-    KURZER Cooldown (Standard 2 Min): Wird genutzt bei transientem RATE-LIMIT
+    KURZER Cooldown (Standard 5s): Wird genutzt bei transientem RATE-LIMIT
     (Free-Tier 'rate-limited', 'retrying in Xs'). Credits sind NICHT aufgebraucht,
     man müsste nur warten. Wir warten NICHT, sondern swappen sofort den Key und
-    holen diesen Key nach kurzer Zeit wieder zurück in den aktiven Pool.
+    holen diesen Key nach 5s wieder zurück in den aktiven Pool (Vercel resettet
+    nach ~30s, 5s Puffer reicht).
     """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cooldown_date = (datetime.now() + timedelta(minutes=minutes)).isoformat()
+    cooldown_date = (datetime.now() + timedelta(seconds=seconds)).isoformat()
     cursor.execute("""
-        UPDATE api_keys 
-        SET status = 'cooldown', cooldown_until = ?, cooldown_reason = 'rate_limited'
-        WHERE key = ?
+    UPDATE api_keys
+    SET status = 'cooldown', cooldown_until = ?, cooldown_reason = 'rate_limited'
+    WHERE key = ?
     """, (cooldown_date, key))
     conn.commit()
     conn.close()
-    print(f"🟡 Key {key[:8]}... RATE-LIMIT → {minutes} Min Kurz-Pause bis {cooldown_date[11:19]}")
+    print(f"🟡 Key {key[:8]}... RATE-LIMIT → {seconds}s Kurz-Pause bis {cooldown_date[11:19]}")
 
 def recover_expired_keys():
     """Reaktiviert Keys, deren 31-Tage-Cooldown abgelaufen ist"""

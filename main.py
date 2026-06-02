@@ -29,9 +29,11 @@ OUTBOUND_PROXY = os.getenv("OUTBOUND_PROXY") or None
 # Endpunkt für LLM-Inferenz.
 TARGET_BASE_URL = "https://ai-gateway.vercel.sh"
 
-# Wie lange ein Key bei einem transienten Rate-Limit kurz pausiert wird (Minuten).
-# 2 Min ist genug für Free-Tier Rate-Limits (Vercel resettet nach ~30s, wir geben Puffer).
-RATE_LIMIT_COOLDOWN_MINUTES = 2
+# Wie lange ein Key bei einem transienten Rate-Limit pausiert wird (SEKUNDEN, nicht Minuten!).
+# Vercel resetttet nach ~30s. 5s Puffer reicht — niemals länger warten.
+# VORHER: 2 Minuten = 120s → Pool tot nach wenigen Requests weil ALLE Keys gleichzeitig
+# in 2-Min-Pause sind und recover_expired_keys nur alle ~60s in der Background-Task läuft.
+RATE_LIMIT_COOLDOWN_SECONDS = 5
 
 # --- Fehler-Klassifizierung -------------------------------------------------
 # Wir müssen DREI Fälle sauber unterscheiden:
@@ -228,7 +230,7 @@ async def proxy_request(path: str, request: Request):
                 if error_kind == "rate_limit":
                     # Transientes Rate-Limit -> Key nur kurz pausieren, NICHT warten.
                     # Wir swappen sofort auf den nächsten Key, damit opencode weiterläuft.
-                    mark_key_short_cooldown(api_key, minutes=RATE_LIMIT_COOLDOWN_MINUTES)
+                    mark_key_short_cooldown(api_key, seconds=RATE_LIMIT_COOLDOWN_SECONDS)
                     last_error = error_body
                     continue  # Sofortiger interner Retry mit dem nächsten Key!
 
@@ -272,13 +274,13 @@ async def proxy_request(path: str, request: Request):
             # Timeout liegt meist am Zielserver, nicht am Key -> kurzer Cooldown,
             # damit der Key bald wieder mitspielt.
             await client.aclose()
-            mark_key_short_cooldown(api_key, minutes=RATE_LIMIT_COOLDOWN_MINUTES)
+            mark_key_short_cooldown(api_key, seconds=RATE_LIMIT_COOLDOWN_SECONDS)
             last_error = "Request timeout"
             continue
         except Exception as e:
             # Netzwerkfehler ist kein Credit-Problem -> kurzer Cooldown, weitermachen
             await client.aclose()
-            mark_key_short_cooldown(api_key, minutes=RATE_LIMIT_COOLDOWN_MINUTES)
+            mark_key_short_cooldown(api_key, seconds=RATE_LIMIT_COOLDOWN_SECONDS)
             last_error = str(e)
             continue
             
@@ -293,4 +295,4 @@ async def proxy_request(path: str, request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=17341)

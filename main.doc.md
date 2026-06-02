@@ -19,8 +19,9 @@ Wird konsumiert von: opencode (Provider `vercel-pool` → `http://localhost:8001
 | Konstante | Wert | Bedeutung |
 |---|---|---|
 | `TARGET_BASE_URL` | `https://ai-gateway.vercel.sh` | Vercel AI Gateway Endpunkt (**NICHT** `api.vercel.ai` — das ist für Deployments und antwortet mit `DEPLOYMENT_NOT_FOUND`) |
-| `RATE_LIMIT_COOLDOWN_MINUTES` | `2` | Wie lange ein Key bei transientem Rate-Limit pausiert wird, bevor er wieder in den Pool rotiert |
+| `RATE_LIMIT_COOLDOWN_SECONDS` | `5` | Wie lange ein Key bei transientem Rate-Limit pausiert (SEKUNDEN). Vercel resetttet nach ~30s. |
 | `OUTBOUND_PROXY` | `os.getenv("OUTBOUND_PROXY") or None` | Optional: HTTP/SOCKS Proxy für IP-Rotation (Vercel rate-limitet primär über API-Key, nicht IP) |
+| **Port** | **17341** | Eindeutiger Port (nie 8000/8001 — von anderen Services belegt). |
 
 ## Design-Entscheidungen
 
