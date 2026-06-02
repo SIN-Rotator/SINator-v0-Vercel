@@ -1,22 +1,11 @@
 """
-╔══════════════════════════════════════════════════════════════════════════════╗
-║              SINATOR AGENT-TOOLBOX — FastAPI App (V8, 2026-05-22)           ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║                                                                              ║
-║  ZWECK:                                                                      ║
-║  Startet die FastAPI-App mit Uvicorn und registriert alle Routen.            ║
-║  Pool: 30 API Keys — ~209s/Rotation                                         ║
-║                                                                              ║
-║  USAGE:                                                                       ║
-║  python start_toolbox.py                                                     ║
-║  uvicorn start_toolbox:app --reload --host 0.0.0.0 --port 8000              ║
-║                                                                              ║
-║  DOCS:                                                                        ║
-║  Swagger UI: http://localhost:8000/docs                                      ║
-║  ReDoc:      http://localhost:8000/redoc                                     ║
-║  OpenAPI:    http://localhost:8000/openapi.json                              ║
-║  Docs:       start_toolbox.doc.md                                           ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+SINator Agent Toolbox — FastAPI App entry point.
+
+Purpose: Starts the FastAPI app via Uvicorn and registers all API routes
+(Pool, GMX, Fireworks, Rotation, Config) + the dashboard SPA. Also runs the
+V19.10 background lease-cleanup loop (60s interval) to prevent ghost leases.
+
+Docs: start_toolbox.doc.md
 """
 import os
 import sys
@@ -70,27 +59,36 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("⚠️ GMX Alias API NICHT erreichbar auf Port 8001 — ./start.sh in gmx-alias-tool/ starten!")
 
-    # V19.10: Background task — expire stale leases every 60s.
-    # Verhindert "Geister-Leases" wenn Proxies crashen/killed werden ohne /pool/return.
+    # ── V19.10 Background Lease Cleanup ─────────────────────────────────────
+    # Safety net for the V19.11 proxy return-old-key flow: if a proxy dies
+    # before returning its key (SIGKILL, OOM, etc.), the lease sits in the pool
+    # until expire_leases() runs. Without this loop, that only happens when
+    # someone calls /pool/lease or /pool/stats — not on its own.
+    LEASE_CLEANUP_INTERVAL = 60  # 1 minute — short enough to free keys quickly,
+                                  # long enough to not hammer the JSON file
     import asyncio as _asyncio
     from agent_toolbox.core.pool_manager import get_pool_manager
 
     async def _expire_leases_loop():
+        """Periodically expire stale leases from crashed proxies."""
         while True:
             try:
-                await _asyncio.sleep(60)
+                await _asyncio.sleep(LEASE_CLEANUP_INTERVAL)
                 pool_mgr = get_pool_manager()
                 expired = pool_mgr.expire_leases()
+                # Only log when work was done — avoids log spam every minute
                 if expired > 0:
                     logger.info(f"🧹 V19.10 Lease-Cleanup: {expired} stale lease(s) expired")
             except Exception as e:
+                # Never let the cleanup loop die — log and continue
                 logger.warning(f"⚠️ Lease-Cleanup failed: {e}")
 
     cleanup_task = _asyncio.create_task(_expire_leases_loop())
-    logger.info("🧹 V19.10 Lease-Cleanup loop started (60s interval)")
+    logger.info(f"🧹 V19.10 Lease-Cleanup loop started ({LEASE_CLEANUP_INTERVAL}s interval)")
 
     yield
 
+    # Graceful shutdown — cancel the background task
     cleanup_task.cancel()
     logger.info("🛑 SINator Agent Toolbox fährt herunter...")
 

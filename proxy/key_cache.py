@@ -1,6 +1,10 @@
 """
 Primary/backup key cache with on-disk persistence for pool proxy.
 
+Purpose: Persist the proxy's leased primary + backup Fireworks API keys to
+~/.sin-pool/ so they survive proxy restarts. V19.11 also tracks the "previous"
+key (expired, pending return to pool) for crash-recovery.
+
 Docs: key_cache.doc.md
 """
 import json
@@ -92,7 +96,12 @@ class KeyCache:
             expires = self.primary.get("expires_at", 0)
             if expires and time.time() > expires:
                 logger.warning("Primary key lease expired")
-                # V19.11: Save to previous so it can be returned to pool
+                # V19.11: Save to `previous` (persisted to previous-key.json) so
+                # the server's _ensure_key() can call /pool/return on the next
+                # request. Without this, the key sits "leased" in the backend
+                # until the 30-min TTL + V19.10 cleanup loop expires it.
+                # CRITICAL: persist BEFORE clearing so a crash mid-return
+                # still allows the next proxy start to recover the key.
                 self.previous = self.primary
                 self.primary = None
                 self._save()
@@ -104,7 +113,12 @@ class KeyCache:
         return None
 
     def pop_previous(self) -> Optional[Dict[str, Any]]:
-        """V19.11: Get and clear the previous (expired) key for return-to-pool."""
+        """V19.11: Atomically get and clear the previous (expired) key.
+
+        Called by _ensure_key() in server.py BEFORE leasing a new key.
+        Returns the key dict and clears it from disk so it's not returned twice.
+        Returns None if there's no pending previous key.
+        """
         prev = self.previous
         self.previous = None
         PREVIOUS_KEY_FILE.unlink(missing_ok=True)

@@ -119,8 +119,11 @@ class PoolProxy:
         self.pool_client = PoolClient(cfg.get("pool_api_url"))
         self.cache = KeyCache()
         self.fw_session: Optional[aiohttp.ClientSession] = None
-        # Unique proxy ID: port + random suffix (NOT time-based — all 10 proxies
-        # in start-multi.sh used to share the same int(time.time()) within 1s!)
+        # V19.10: Unique proxy ID — port + random suffix.
+        # Before: f"proxy-{int(time.time())}" — all 10 proxies in start-multi.sh
+        # started within the same second, so they ALL got the same ID.
+        # This caused 52+20 leases to pile up under one leased_to and
+        # made the pool unusable (only 12 available of 256 total).
         import random as _random
         self.proxy_id = f"proxy-{self.port}-{_random.randint(1000, 9999)}"
 
@@ -168,7 +171,12 @@ class PoolProxy:
         primary = self.cache.get_primary()
         if primary:
             return primary
-        # V19.11: Return expired key to pool before leasing new one
+        # ── V19.11: Return expired key BEFORE leasing new one ──────────────
+        # When get_primary() detected expiry, it saved the key to `previous`
+        # (persisted as ~/.sin-pool/previous-key.json for crash recovery).
+        # We must return it via /pool/return now — otherwise the key sits
+        # "leased" in the backend until the 30-min TTL + V19.10 cleanup loop.
+        # This wastes pool capacity: 1 expired key = 1 fewer available key.
         prev = self.cache.pop_previous()
         if prev:
             try:
@@ -178,6 +186,7 @@ class PoolProxy:
                 )
                 logger.info(f"Returned expired key {prev.get('key_id','?')[:8]}... to pool: ok={returned}")
             except Exception as e:
+                # Never let a return failure block leasing — log and continue
                 logger.warning(f"Failed to return expired key: {e}")
         if not NO_BACKUP:
             promoted = self.cache.promote_backup()

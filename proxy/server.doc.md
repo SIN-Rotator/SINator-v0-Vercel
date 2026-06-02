@@ -1,68 +1,61 @@
-# Pool Proxy Server (`server.py`)
+# server.py — Pool Proxy (aiohttp)
 
-aiohttp-based async proxy that fronts Fireworks AI inference endpoints. Manages a pool of API keys with automatic rotation on 401/402/403/412/429 errors, SSE streaming, and backup key pre-fetching for zero-downtime swaps.
+## What
+aiohttp-based async HTTP proxy that sits between the dashboard/Tauri app and the
+Fireworks API. Manages API key leasing, caching, and automatic failover when a
+key gets suspended.
 
-## Dependencies
+## Why
+- **Zero-downtime key swap**: Pre-fetches a backup key for instant 0ms failover
+  when the primary returns 401/402/403/412/429
+- **SSE streaming support**: Critical for Fireworks chat completions (old proxy
+  couldn't stream)
+- **Lease-based key management**: Atomic, TTL-based — prevents dashboard from
+  leasing the same key twice
 
-- **Imported by:** run directly (`python -m proxy.server`)
-- **Imports:** `aiohttp`, `aiohttp.web`, `proxy.config`, `proxy.pool_client`, `proxy.key_cache`
+## Touched by
+- `com.sinator.pool-proxy-8888..8897` LaunchAgents (10 instances)
+- `proxy/pool_client.py` — async HTTP client for backend pool API
+- `proxy/key_cache.py` — primary/backup key persistence to disk
+- `proxy/config.py` — env-driven config
+- `pool-router.py` (scripts/) — round-robins across the 10 proxy instances
 
-## Key Class
+## Key features
 
-| Symbol | Purpose |
-|--------|---------|
-| `PoolProxy` | Main proxy: key management, request forwarding, SSE streaming, error handling |
+### V19.10: Unique proxy_id
+`f"proxy-{port}-{random}"` instead of `int(time.time())`. Before the fix, all 10
+proxies started within the same second got the SAME proxy_id — their leases all
+landed under one `leased_to` and couldn't be told apart.
 
-### Methods
+### V19.11: Return-old-key flow
+`KeyCache.get_primary()` saves expired keys to `previous` (persisted as
+`previous-key.json`). `_ensure_key()` calls `pop_previous()` and returns the
+expired key via `/pool/return` BEFORE leasing a new one. Prevents ghost leases
+from cache expiry (30 min cycle).
 
-| Method | Purpose |
-|--------|---------|
-| `create_app()` | Build aiohttp `web.Application` with routes + middleware |
-| `_ensure_key()` | Get primary (or promote backup, or lease new) |
-| `_swap_key(reason)` | Report dead key, atomically get replacement |
-| `_verify_key_dead(api_key)` | Verify key is dead via lightweight `/chat/completions` probe |
-| `_do_proxy(request, fw_url)` | Forward request to Fireworks, handle errors/retries/SSE |
-| `_stream_sse(request, fw_resp)` | Stream SSE response chunked to client |
-| `_handle_v1_models(request)` | Return all Fireworks models from `~/.hermes/models_dev_cache.json` |
+## Endpoints
+- `GET /health` — proxy status + cached key info
+- `GET /pool-status` — pool stats from backend + cache status
+- `GET /pool-lease` — lease a key (for dashboard/rotation use)
+- `GET /v1/models` — Fireworks model list (cached)
+- `*  /v1/{path}` — proxy to Fireworks API
+- `*  /inference/v1/{path}` — proxy to Fireworks API
 
-## HTTP Endpoints
+## Auth
+- `Authorization: Bearer <SINATOR_AUTH_TOKEN>` for all `/v1/*` and `/inference/*`
+- `/health`, `/pool-status`, `/v1/models` are public
 
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/health` | GET | Health check — key status, request count, proxy_id |
-| `/pool-status` | GET | Pool stats + cache status |
-| `/pool-lease` | GET | Lease a single key (query: `?leased_to=...`) |
-| `/v1/models` | GET | All Fireworks models from models cache |
-| `/inference/v1/models` | GET | Same as `/v1/models` |
-| `/inference/v1/{path}` | ANY | Proxy to `api.fireworks.ai/inference/v1/{path}` |
-| `/v1/{path}` | ANY | Proxy to `api.fireworks.ai/inference/v1/{path}` |
+## Usage
+```bash
+# Single instance
+SIN_PROXY_PORT=8888 python3 -m proxy.server
 
-## Middleware
+# All 10 via LaunchAgent
+launchctl load ~/Library/LaunchAgents/com.sinator.pool-proxy-8888.plist
+```
 
-| Middleware | Purpose |
-|-----------|---------|
-| `_cors_middleware` | CORS headers for all origins |
-| `_pool_auth_middleware` | Bearer token auth on `/inference/` and `/v1/` paths. Bypassed for localhost (127.0.0.1/::1). External access must go through the pool-router (which enforces auth at entry). |
-
-## Key Rotation Logic
-
-- **Dead codes** (401, 402, 403, 412): Verify via body keyword check + `/chat/completions` probe before swapping
-- **Permanent 429** (spending limit matched): swap immediately
-- **Transient 429**: return to client with `Retry-After` header
-- **5xx**: retry up to `max_retries` times
-- **Cascade stop**: max 2 consecutive swaps before returning error to client
-
-## Config
-
-| Env Var | Default | Purpose |
-|---------|---------|---------|
-| `SINATOR_AUTH_TOKEN` | `""` (disabled) | Bearer token for proxy auth |
-| `SIN_NO_BACKUP` | `false` | Disable backup key pre-fetching |
-| `SIN_BACKEND_WAIT` | `5` | Seconds to wait for backend on startup |
-| `SIN_PROXY_PORT` | `8888` | Proxy listen port |
-
-## Infrastructure (v19.2)
-
-- **Bind:** `127.0.0.1` (localhost only) — no external access. All traffic arrives via pool-router (`:9998`), which enforces Bearer auth.
-- **Tunnel:** Cloudflare Tunnel (`sinator`) routes `sinatorpool-router.delqhi.com` → `localhost:9998`.
-- **Flow:** Client → CF Tunnel → pool-router (auth) → proxy (localhost, no auth) → Fireworks API.
+## Caveats
+- **Window size**: aiohttp default, not set explicitly
+- **No retry on Fireworks 5xx**: only retries on dead-key codes (401/402/403/412/429)
+- **Cache files in `~/.sin-pool/`**: persists across restarts but stale keys
+  on disk are returned to pool on next lease via V19.11

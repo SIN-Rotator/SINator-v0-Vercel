@@ -217,7 +217,15 @@ class PoolManager:
                 key["suspended"] = True
                 key["suspended_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
                 key["suspended_reason"] = reason
-                # V19.11: Clear lease fields — suspended key can't be "leased" anymore
+                # V19.11: Clear lease fields — a suspended key can never be
+                # "actively leased". Before this fix, get_stats() excluded
+                # suspended keys from the leased count (because `not suspended`
+                # in the AND chain), so the stats were correct. BUT the raw JSON
+                # still had `leased_until` etc. set, which:
+                #   1. Confused debugging (looked like the key was still leased)
+                #   2. Could cause issues if unsuspend_key() (V19.9) was called
+                #      — the stale lease fields would make it look actively leased
+                # Setting them to None keeps the JSON state consistent.
                 key["leased_until"] = None
                 key["leased_to"] = None
                 key["lease_id"] = None
