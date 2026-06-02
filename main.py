@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import httpx
 from pool_manager import (
     get_active_key,
@@ -13,10 +13,12 @@ from pool_manager import (
 init_db()
 app = FastAPI(title="SINator-VercelPool", description="Intelligenter API Key Pool für Vercel AI Gateway")
 
-# OPTIONAL: Wenn du IP-Rotation brauchst, trage hier deine öffentlichen Proxies ein.
-# Beispiel: OUTBOUND_PROXIES = {"http://": "http://user:pass@proxy-ip:port", "https://": "http://user:pass@proxy-ip:port"}
+# OPTIONAL: Wenn du IP-Rotation brauchst, trage hier eine Proxy-URL ein.
+# Beispiel: OUTBOUND_PROXY = "http://user:pass@proxy-ip:port" oder "socks5://host:port"
 # Wenn nicht nötig, auf None lassen. Vercel rate-limitet primär über den API-Key, nicht die IP.
-OUTBOUND_PROXIES = None 
+# Hinweis: ab httpx 0.28 heißt das Argument 'proxy' (einzelne URL), nicht mehr 'proxies'.
+import os
+OUTBOUND_PROXY = os.getenv("OUTBOUND_PROXY") or None
 
 # Ziel-URL anpassen (z.B. Vercel AI Gateway oder direkter OpenAI-Endpunkt über Vercel)
 TARGET_BASE_URL = "https://api.vercel.ai"
@@ -141,55 +143,87 @@ async def proxy_request(path: str, request: Request):
         headers["authorization"] = f"Bearer {api_key}"
         target_url = f"{TARGET_BASE_URL}/v1/{path}"
         
+        # Client wird NICHT mit 'async with' geschlossen, da er bei Erfolg
+        # während des Streamings offen bleiben muss. Wir schließen ihn manuell:
+        # - bei Fehler/Retry sofort
+        # - bei Erfolg erst, wenn der Stream zu Ende ist (im Generator unten)
+        client = httpx.AsyncClient(proxy=OUTBOUND_PROXY, timeout=120.0)
         try:
-            async with httpx.AsyncClient(proxies=OUTBOUND_PROXIES) as client:
-                resp = await client.request(
-                    method=request.method,
-                    url=target_url,
-                    headers=headers,
-                    content=body,
-                    timeout=120.0
-                )
+            # Streaming-Request öffnen: Header/Status kommen SOFORT, der Body wird
+            # erst beim Durchlaufen geladen (kein Puffern der kompletten Antwort).
+            req = client.build_request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                content=body,
+            )
+            resp = await client.send(req, stream=True)
+            
+            # Bei Fehler-Status den (kurzen) Body lesen, klassifizieren und ggf. retrien.
+            if resp.status_code >= 400:
+                error_body = (await resp.aread()).decode("utf-8", errors="replace")
+                await resp.aclose()
+                await client.aclose()
                 
-                response_text = resp.text
-                
-                # Fehler klassifizieren: 'credits' (31 Tage), 'rate_limit' (kurz) oder 'none'
-                error_kind = classify_error(resp.status_code, response_text)
+                error_kind = classify_error(resp.status_code, error_body)
                 
                 if error_kind == "credits":
                     # Credits aufgebraucht / Billing -> Key 31 Tage archivieren
                     mark_key_long_cooldown(api_key)
-                    last_error = response_text
+                    last_error = error_body
                     continue  # Sofortiger interner Retry mit dem nächsten Key!
                 
                 if error_kind == "rate_limit":
                     # Transientes Rate-Limit -> Key nur kurz pausieren, NICHT warten.
                     # Wir swappen sofort auf den nächsten Key, damit opencode weiterläuft.
                     mark_key_short_cooldown(api_key, minutes=RATE_LIMIT_COOLDOWN_MINUTES)
-                    last_error = response_text
+                    last_error = error_body
                     continue  # Sofortiger interner Retry mit dem nächsten Key!
                 
-                # Erfolgreich oder nicht retry-barer Fehler -> direkt an Client zurückgeben
-                # Filter response headers
-                response_headers = {}
-                for key, value in resp.headers.items():
-                    if key.lower() not in ['content-encoding', 'transfer-encoding', 'content-length']:
-                        response_headers[key] = value
-                
+                # Nicht retry-barer Fehler (z.B. 400 Bad Request) -> direkt zurückgeben
+                response_headers = {
+                    k: v for k, v in resp.headers.items()
+                    if k.lower() not in ("content-encoding", "transfer-encoding", "content-length")
+                }
                 return Response(
-                    content=resp.content, 
-                    status_code=resp.status_code, 
-                    headers=response_headers
+                    content=error_body.encode("utf-8"),
+                    status_code=resp.status_code,
+                    headers=response_headers,
                 )
+            
+            # ERFOLG (2xx): Antwort Token-für-Token durchstreamen, ohne zu puffern.
+            # opencode sieht die Antwort sofort fließen statt erst am Ende.
+            response_headers = {
+                k: v for k, v in resp.headers.items()
+                if k.lower() not in ("content-encoding", "transfer-encoding", "content-length")
+            }
+            
+            async def stream_body():
+                # Client + Response erst schließen, wenn der Stream komplett durch ist.
+                try:
+                    async for chunk in resp.aiter_raw():
+                        yield chunk
+                finally:
+                    await resp.aclose()
+                    await client.aclose()
+            
+            return StreamingResponse(
+                stream_body(),
+                status_code=resp.status_code,
+                headers=response_headers,
+                media_type=resp.headers.get("content-type"),
+            )
                 
         except httpx.TimeoutException:
             # Timeout liegt meist am Zielserver, nicht am Key -> kurzer Cooldown,
             # damit der Key bald wieder mitspielt.
+            await client.aclose()
             mark_key_short_cooldown(api_key, minutes=RATE_LIMIT_COOLDOWN_MINUTES)
             last_error = "Request timeout"
             continue
         except Exception as e:
             # Netzwerkfehler ist kein Credit-Problem -> kurzer Cooldown, weitermachen
+            await client.aclose()
             mark_key_short_cooldown(api_key, minutes=RATE_LIMIT_COOLDOWN_MINUTES)
             last_error = str(e)
             continue
