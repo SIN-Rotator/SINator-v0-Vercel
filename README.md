@@ -74,6 +74,43 @@ cloudflared tunnel run your-tunnel-name
 | `GET /pool/status` | Detaillierter Pool-Status |
 | `* /v1/*` | Proxy zu Vercel AI Gateway |
 
+## Verfügbare Modelle
+
+Siehe `known_models.py` für die vollständige Liste mit Preisen, Context-Limits
+und Prompt-Tipps pro Modell.
+
+### ✅ Free Tier — funktioniert sofort
+
+| SINator-Vercel | Vercel Model ID | Context | Input $/M | Output $/M | Stärken |
+|---|---|---|---:|---:|---|
+| `minimax-m3` | `minimax/minimax-m3` | 1M | $0.30 | $1.20 | Bestes Preis/Leistung, Vision+PDF |
+| `grok-build` | `xai/grok-build-0.1` | 256K | $1.00 | $2.00 | Agentic Coding, Tool-Use |
+| `grok-4` | `xai/grok-4.3` | 1M | $1.25 | $2.50 | xAI Flagship, Reasoning+Vision+Files |
+| `nano-banana-2` | `google/gemini-3.1-flash-image` | 131K | $0.50 | — | Text→/Image→Image, 4K Edit |
+
+### ❌ Free Tier Block — Paid Only
+
+| Vercel Model ID | Grund |
+|---|---|
+| `alibaba/qwen3.7-plus` | 403 RestrictedModelsError |
+| `alibaba/qwen3.7-max` | 403 RestrictedModelsError |
+| `anthropic/claude-opus-4.8` | 403 RestrictedModelsError |
+| `openai/gpt-5.5` | 403 RestrictedModelsError |
+
+### Nutzung
+
+```bash
+# Über Pool (alle Models)
+curl -s http://localhost:17341/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"xai/grok-4.3","messages":[{"role":"user","content":"Hi"}]}'
+
+# Pool-Status
+curl -s http://localhost:17341/pool/status | python3 -m json.tool
+```
+
+---
+
 ## Client-Konfiguration (opencode)
 
 ```json
