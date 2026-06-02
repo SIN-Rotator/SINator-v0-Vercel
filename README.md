@@ -9,7 +9,7 @@ opencode CLI / Client
   ↓ (sendet Request an lokale/öffentliche URL)
 Cloudflare Tunnel (cloudflared)
   ↓ (leitet weiter an lokalen Port)
-SINator-VercelPool Router (FastAPI, Port 8000)
+SINator-VercelPool Router (FastAPI, Port 17341)
   ↓ 1. Holt aktiven Key aus SQLite-Datenbank (LRU)
   ↓ 2. Sendet Request an Vercel AI Gateway
   ↓ 3. Bei 429/402/403: Markiert Key als "Cooldown (31 Tage)" und retryt SOFORT
@@ -59,7 +59,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 
 ```bash
 # Temporär (für Tests)
-cloudflared tunnel --url http://localhost:8000
+cloudflared tunnel --url http://localhost:17341
 
 # Dauerhaft (nach Tunnel-Setup in Cloudflare Dashboard)
 cloudflared tunnel run your-tunnel-name
