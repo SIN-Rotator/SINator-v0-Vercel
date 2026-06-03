@@ -126,7 +126,7 @@ class GmxService:
             return False
         # Use stored SID from _login
         if self.sid:
-            mail_url = f"https://navigator.gmx.net/mail?sid={self.sid}"
+            mail_url = f"https://bap.navigator.gmx.net/mail?sid={self.sid}"
             logger.info(f"Navigiere inbox_tab mit SID...")
             await self.inbox_tab.goto(mail_url, wait_until="domcontentloaded")
         else:
@@ -148,7 +148,11 @@ class GmxService:
                         break
             except Exception as e:
                 logger.warning(f"inbox_tab consent failed: {e}")
-            await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded")
+            # Use stored SID for redirect, or navigate without SID as fallback
+            if self.sid:
+                await self.inbox_tab.goto(f"https://bap.navigator.gmx.net/mail?sid={self.sid}", wait_until="domcontentloaded")
+            else:
+                await self.inbox_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded")
             await asyncio.sleep(5)
         body = await self.inbox_tab.evaluate("() => document.body.innerText")
         if "Nicht eingeloggt" in body or ("anmelden" in body.lower()[:200] and "E-Mail" not in body):
@@ -229,7 +233,10 @@ class GmxService:
                                     logger.info(f"[CDP-AXTree] Consent clicked: {result}")
                                     await asyncio.sleep(3)
                                     # After accepting consent, navigate directly to inbox
-                                    await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
+                                    if self.sid:
+                                        await self.inbox_tab.goto(f"https://bap.navigator.gmx.net/mail?sid={self.sid}", wait_until="domcontentloaded", timeout=15000)
+                                    else:
+                                        await self.inbox_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
                                     await asyncio.sleep(5)
                                     continue
                                 except Exception as ce:
@@ -242,7 +249,7 @@ class GmxService:
                             except Exception as reload_err:
                                 logger.warning(f"[CDP-AXTree] Reload failed: {reload_err}")
                                 try:
-                                    await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
+                                    await self.inbox_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
                                     await asyncio.sleep(5)
                                 except Exception:
                                     pass
