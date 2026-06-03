@@ -12,7 +12,7 @@ Docs: billing_tracker.doc.md
 """
 import re as _re
 import json as _json
-import time as _time
+import asyncio
 import logging
 
 _logger = logging.getLogger(__name__)
@@ -45,7 +45,7 @@ async def check_key_credits_via_cdp(api_key: str) -> dict:
         sid = await client.attach_to_target(targets[0]["targetId"])
 
         await client.navigate(sid, "https://app.fireworks.ai/account/billing")
-        await _time.sleep(5)
+        await asyncio.sleep(5)
 
         body = await client.evaluate(sid, "document.body.innerText", return_by_value=True)
         body_text = ""
