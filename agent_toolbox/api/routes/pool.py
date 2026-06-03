@@ -27,8 +27,23 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import os
+
+security = HTTPBearer(auto_error=False)
+
+AUTH_TOKEN = os.environ.get("SINATOR_AUTH_TOKEN", "").strip()
+
+def verify_auth_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Require Bearer token for mutating endpoints. Allow localhost bypass."""
+    token = (credentials.credentials if credentials else "").strip()
+    if not AUTH_TOKEN:
+        return True  # No auth configured — open (backward compat)
+    if token == AUTH_TOKEN:
+        return True
+    raise HTTPException(status_code=401, detail="Unauthorized: invalid or missing Bearer token")
 
 from agent_toolbox.core.pool_manager import (
     get_pool_manager,
@@ -79,7 +94,7 @@ async def get_pool_stats():
 
 
 @router.post("/add", response_model=PoolAddKeyResponse)
-async def add_key_to_pool(request: PoolAddKeyRequest):
+async def add_key_to_pool(request: PoolAddKeyRequest, _=Depends(verify_auth_token)):
     """
     Fügt einen neuen API-Key zum Pool hinzu.
     """
@@ -107,7 +122,7 @@ async def add_key_to_pool(request: PoolAddKeyRequest):
 
 
 @router.post("/use")
-async def mark_key_used(key_id: str):
+async def mark_key_used(key_id: str, _=Depends(verify_auth_token)):
     """
     Markiert einen API-Key als verwendet.
     """
@@ -148,7 +163,7 @@ async def get_api_key():
 
 
 @router.post("/report")
-async def report_bad_key(request: dict):
+async def report_bad_key(request: dict, _=Depends(verify_auth_token)):
     """
     Key als verbraucht melden (Rate-Limit/Suspended).
     Markiert den Key als used und liefert einen neuen.
@@ -219,7 +234,7 @@ async def lease_key_get(leased_to: str = "dashboard", ttl_seconds: int = 1800):
 
 
 @router.post("/lease")
-async def lease_key(request: dict):
+async def lease_key(request: dict, _=Depends(verify_auth_token)):
     """
     Lease an available key atomically with TTL.
     
@@ -270,7 +285,7 @@ async def lease_key(request: dict):
 
 
 @router.post("/return")
-async def return_leased_key(request: dict):
+async def return_leased_key(request: dict, _=Depends(verify_auth_token)):
     """
     Return a leased key, making it available again.
     
@@ -297,7 +312,7 @@ async def return_leased_key(request: dict):
 
 
 @router.post("/agent-key")
-async def get_agent_key(request: dict):
+async def get_agent_key(request: dict, _=Depends(verify_auth_token)):
     """V19.14: Soft-ownership key assignment — never blocks.
 
     Body: {
@@ -343,7 +358,7 @@ async def get_agent_key(request: dict):
 
 
 @router.post("/agent-release")
-async def release_agent_key(request: dict):
+async def release_agent_key(request: dict, _=Depends(verify_auth_token)):
     """V19.14: Agent releases a key.
     
     Body: {"agent_id": "...", "key_id": "..."}
@@ -368,7 +383,7 @@ async def release_agent_key(request: dict):
 
 
 @router.post("/agent-heartbeat")
-async def agent_heartbeat(request: dict):
+async def agent_heartbeat(request: dict, _=Depends(verify_auth_token)):
     """V19.14: Agent sends heartbeat to keep active_consumers alive.
     
     Body: {"agent_id": "...", "key_id": "..."}
@@ -537,7 +552,7 @@ async def reveal_key(key_id: str):
 
 
 @router.post("/migrate-to-keychain")
-async def migrate_to_keychain(dry_run: bool = False):
+async def migrate_to_keychain(dry_run: bool = False, _=Depends(verify_auth_token)):
     """
     Migriert alle Plaintext API-Keys in macOS Keychain.
     Nach der Migration enthält die Pool-JSON nur noch SENTINEL-Werte.
@@ -551,7 +566,7 @@ async def migrate_to_keychain(dry_run: bool = False):
 
 
 @router.delete("/{key_id}")
-async def delete_key(key_id: str):
+async def delete_key(key_id: str, _=Depends(verify_auth_token)):
     """
     Löscht einen API-Key aus dem Pool.
     """

@@ -10,7 +10,7 @@ Kernfunktionen:
 Playwright-native für Alias-Rotation + OTP (read_otp_via_playwright).
 """
 import time
-import random
+import secrets
 import logging
 import re
 import asyncio
@@ -67,9 +67,9 @@ class GmxService:
         self.GMX_DOMAINS = ["gmx.de", "gmx.net", "gmx.com", "gmx.eu"]
 
     def generate_alias_name(self) -> str:
-        adj = random.choice(self.adjectives)
-        noun = random.choice(self.nouns)
-        num = random.randint(100, 999)
+        adj = secrets.choice(self.adjectives)
+        noun = secrets.choice(self.nouns)
+        num = secrets.randbelow(900) + 100
         return f"{adj}-{noun}-{num}"
 
     # ── V19.19: Safe JS-Eval Wrappers (Timeout + Recovery) ───────────────

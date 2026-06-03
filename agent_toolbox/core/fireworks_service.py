@@ -477,7 +477,7 @@ async def _playwright_onboarding() -> None:
         pass
 
     # ── Step 2: Fill text fields via browser_type (delay=30ms triggers React) ─
-    import random, string
+    import secrets, string
 
     # Account ID — DO NOT TOUCH (Fireworks pre-fills it with a unique suggestion,
     # editing it triggers a "max 20 chars" validation error)
@@ -493,7 +493,7 @@ async def _playwright_onboarding() -> None:
             logger.info(f"Account ID pre-filled by Fireworks: '{current_aid}' (using as-is, NOT overwriting)")
         else:
             # Field is empty — fill with a safe 11-char value
-            aid = "sin" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+            aid = "sin" + "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))
             try:
                 await browser_type('input[name="accountId"]', aid)
             except Exception as e:

@@ -1,11 +1,11 @@
 # SINator Fireworks AI Rotator — Python Dependencies
 # Install: pip install -r requirements.txt && playwright install chromium
 
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-playwright>=1.40.0
-pydantic>=2.5.0
-python-dotenv>=1.0.0
-httpx>=0.25.0
-websockets>=12.0
-aiohttp>=3.9.0
+fastapi==0.128.0
+uvicorn[standard]==0.31.1
+playwright==1.60.0
+pydantic==2.13.3
+python-dotenv==1.0.1
+httpx==0.28.1
+websockets==15.0.1
+aiohttp==3.13.3

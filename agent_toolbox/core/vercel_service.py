@@ -15,7 +15,7 @@ Flow:
 Uses sin-browser-tools for ALL browser interactions.
 """
 import time
-import random
+import secrets
 import logging
 import asyncio
 import re
@@ -509,7 +509,7 @@ class VercelService:
                 await asyncio.sleep(3)
 
             # Fill token name
-            token_name = f"sinator-{random.randint(1000,9999)}"
+            token_name = f"sinator-{secrets.randbelow(9000) + 1000}"
             logger.info(f"[API] Filling token name: {token_name}")
             try:
                 await browser_fill_react('input[name="name"]', token_name)
