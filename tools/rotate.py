@@ -79,8 +79,8 @@ def add_to_pool(entry: Dict[str, Any]):
     pool.append(entry)
     save_pool(pool)
     api_key = entry.get('api_key')
-    key_preview = api_key[:12] + "..." if api_key else "NONE"
-    logger.info(f"Added to pool: {entry.get('email')} -> key={key_preview}")
+    key_id = entry.get('id', 'NONE')
+    logger.info(f"Added to pool: {entry.get('email')} -> key_id={key_id}")
 
 
 # ── Main Rotation ───────────────────────────────────────────────────────
@@ -254,7 +254,7 @@ async def run_rotation() -> Dict[str, Any]:
     if signup_result.get("status") == "success":
         api_key = signup_result["api_key"]
         password = signup_result.get("password", "")
-        logger.info(f"Signup successful! API key: {api_key[:12]}...")
+        logger.info(f"Signup successful! key_id={entry.get('id', 'NONE')}")
         steps.append("signup_success")
 
         # Step 6: Save to pool
