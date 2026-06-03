@@ -209,14 +209,12 @@ async def run_rotation() -> Dict[str, Any]:
 
     # Step 4: Read OTP from GMX
     logger.info("=== STEP 4: Read OTP from GMX ===")
-    # Use read_otp_cdp_axtree directly on fresh_tab (untouched after re-login).
-    # read_otp() via raw CDP modifies the tab state (navigates to iframe) and
-    # breaks the session for AXTree fallback. v0.12 proved AXTree on fresh_tab works.
-    otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=fresh_tab)
+    # read_otp() navigates into the mail iframe (webmailer.gmx.net) where emails
+    # are visible. The JSESSIONID check was a false blocker (fixed in v0.16).
+    # Fallback: read_otp_cdp_axtree on fresh_tab if iframe navigation fails.
+    otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=25, retry_delay=8)
     if otp_result.get("status") != "success":
-        logger.info("First AXTree attempt timed out. Retrying with reload...")
-        await fresh_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded")
-        await asyncio.sleep(5)
+        logger.info("read_otp failed. Fallback: CDP AXTree on fresh_tab...")
         otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=fresh_tab)
     if otp_result.get("status") != "success":
         logger.error("OTP read failed completely")

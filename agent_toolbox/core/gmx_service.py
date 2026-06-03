@@ -1577,7 +1577,7 @@ class GmxService:
                 jsessionid_match = re.search(r'jsessionid=([^?&;]+)', current_page_url)
                 jsessionid = jsessionid_match.group(1) if jsessionid_match else None
             if not jsessionid:
-                return {"status": "error", "otp_url": None, "error": "Kein JSESSIONID"}
+                logger.warning("[read_otp] Kein JSESSIONID gefunden — versuche trotzdem (iframe-URL enthält Session)")
             known_ids = set()
             for i in range(max_retries):
                 logger.info(f"OTP-Suche: Versuch {i+1}/{max_retries}")
