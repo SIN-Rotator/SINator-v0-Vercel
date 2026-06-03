@@ -1526,20 +1526,23 @@ class GmxService:
             url_result = await client.evaluate(session_id, "window.location.href")
             current_url = url_result.get("result", {}).get("value", "")
             sid = None
-            # ONLY directly use SID if we are on bap.navigator.gmx.net (proven iframe works)
-            if "bap.navigator.gmx.net" in current_url and "sid=" in current_url:
+            domain = "bap.navigator.gmx.net"
+            # Accept SID from any navigator.gmx.net subdomain
+            if "navigator.gmx.net" in current_url and "sid=" in current_url:
                 sid = re.search(r'[?&]sid=([^&]+)', current_url)
                 sid = sid.group(1) if sid else None
+                # Extract actual domain from URL for mail_url
+                m = re.search(r'https://([^/]+)/', current_url)
+                if m:
+                    domain = m.group(1)
             if not sid:
-                # Always navigate to www.gmx.net and get fresh SID via Zum Postfach
-                # navigator.gmx.net SID sometimes fails to load iframe — fresh SID is safer
+                # Navigate to www.gmx.net and get fresh SID via Zum Postfach
                 await client.navigate(session_id, "https://www.gmx.net/")
                 await asyncio.sleep(4)
                 body = await client.evaluate(session_id, "document.body.innerText")
                 text = body.get("result", {}).get("value", "")
                 if "Sie sind eingeloggt" not in text and "Zum Postfach" not in text:
                     return {"status": "error", "otp_url": None, "error": "Nicht eingeloggt"}
-                # Look for both "E-Mail" and "Zum Postfach" links
                 await client.evaluate(session_id, """
                 (function(){
                     var els = Array.from(document.querySelectorAll('a, button, [role=link], nav a'));
@@ -1556,10 +1559,13 @@ class GmxService:
                 current_url = url_result.get("result", {}).get("value", "")
                 sid = re.search(r'[?&]sid=([^&]+)', current_url)
                 sid = sid.group(1) if sid else None
+                m = re.search(r'https://([^/]+)/', current_url)
+                if m:
+                    domain = m.group(1)
             if not sid:
                 return {"status": "error", "otp_url": None, "error": "Kein SID"}
-            # Use bap.navigator.gmx.net for reliable iframe loading
-            mail_url = f"https://bap.navigator.gmx.net/mail?sid={sid}"
+            # Use same domain as the original URL for mail navigation
+            mail_url = f"https://{domain}/mail?sid={sid}"
             await client.navigate(session_id, mail_url)
             await asyncio.sleep(6)
             iframe_result = await client.evaluate(session_id, """
@@ -1570,7 +1576,20 @@ class GmxService:
             """, return_by_value=True)
             iframe_src = iframe_result.get("result", {}).get("value", "")
             if not iframe_src:
-                return {"status": "error", "otp_url": None, "error": "Mail iframe nicht gefunden"}
+                # Fallback: try with bap.navigator.gmx.net (most reliable for iframe)
+                logger.warning(f"[read_otp] iframe not found on {domain}, trying bap.navigator.gmx.net fallback")
+                mail_url = f"https://bap.navigator.gmx.net/mail?sid={sid}"
+                await client.navigate(session_id, mail_url)
+                await asyncio.sleep(6)
+                iframe_result = await client.evaluate(session_id, """
+                (function() {
+                    var iframe = document.querySelector('#thirdPartyFrame_mail');
+                    return iframe ? iframe.src : null;
+                })()
+                """, return_by_value=True)
+                iframe_src = iframe_result.get("result", {}).get("value", "")
+                if not iframe_src:
+                    return {"status": "error", "otp_url": None, "error": "Mail iframe nicht gefunden"}
             await client.navigate(session_id, iframe_src)
             await asyncio.sleep(5)
             cookies_res = await client.send_to_session(session_id, "Network.getAllCookies")
