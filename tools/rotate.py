@@ -193,19 +193,17 @@ async def run_rotation() -> Dict[str, Any]:
 
     # Step 4: Read OTP from GMX
     logger.info("=== STEP 4: Read OTP from GMX ===")
-    # Use inbox_tab — it's on bap.navigator.gmx.net/mail?sid=...(verified in Step 1)
-    # work_tab redirects to www.gmx.net (no inbox SID)
-    # work_tab redirects to www.gmx.net (no inbox SID)
-    # Use 300s timeout — Vercel emails can take several minutes
-    otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=300, page=gmx.inbox_tab)
+    # SINator approach: use read_otp() as PRIMARY — creates fresh CDP connection,
+    # checks login state, gets new SID, navigates to mail iframe, clicks email, extracts OTP
+    otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=25, retry_delay=8)
     if otp_result.get("status") != "success":
-        logger.info("First OTP attempt timed out. Retrying with fresh inbox load...")
+        logger.info("read_otp failed. Fallback: CDP AXTree on inbox_tab...")
+        otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=gmx.inbox_tab)
+    if otp_result.get("status") != "success":
+        logger.info("First fallback timed out. Retrying CDP AXTree with fresh inbox load...")
         await gmx.inbox_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded")
         await asyncio.sleep(5)
-        otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=300, page=gmx.inbox_tab)
-    if otp_result.get("status") != "success":
-        logger.info("CDP AXTree OTP not found, trying read_otp...")
-        otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=20, retry_delay=5)
+        otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=gmx.inbox_tab)
     if otp_result.get("status") != "success":
         logger.error("OTP read failed completely")
         await mgr.cleanup()
