@@ -184,11 +184,12 @@ async def run_rotation() -> Dict[str, Any]:
 
     # Step 4: Read OTP from GMX
     logger.info("=== STEP 4: Read OTP from GMX ===")
-    # Re-navigate inbox_tab to GMX inbox (may have been disrupted by Vercel tab creation)
-    await gmx.navigate_inbox()
-    # Try CDP AXTree first (works for both Fireworks URLs and 6-digit codes)
+    # Navigate work_tab to GMX inbox (work_tab has the active session from alias rotation)
+    await gmx.work_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded")
+    await asyncio.sleep(5)
+    # Try CDP AXTree on work_tab (not inbox_tab — work_tab has live session cookies)
     # Use 180s timeout — Vercel emails can take 2-3 minutes
-    otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180)
+    otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=gmx.work_tab)
     if otp_result.get("status") != "success":
         logger.info("CDP AXTree OTP not found, trying read_otp...")
         otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=20, retry_delay=5)

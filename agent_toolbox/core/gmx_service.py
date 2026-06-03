@@ -49,6 +49,7 @@ class GmxService:
         self.inbox_tab: Optional[Page] = None
         self.work_tab: Optional[Page] = None
         self.sid: Optional[str] = None  # GMX session SID, set after login
+        self.sid_domain: Optional[str] = None  # subdomain where SID is valid (e.g., "navigator" or "bap.navigator")
         self.adjectives = [
             "elron", "dark", "swift", "iron", "silver", "golden", "crystal", "shadow",
             "storm", "frost", "blaze", "thunder", "cosmic", "neon", "cyber", "quantum",
@@ -126,8 +127,9 @@ class GmxService:
             return False
         # Use stored SID from _login
         if self.sid:
-            mail_url = f"https://bap.navigator.gmx.net/mail?sid={self.sid}"
-            logger.info(f"Navigiere inbox_tab mit SID...")
+            domain = self.sid_domain or "navigator.gmx.net"
+            mail_url = f"https://{domain}/mail?sid={self.sid}"
+            logger.info(f"Navigiere inbox_tab mit SID (domain={domain})...")
             await self.inbox_tab.goto(mail_url, wait_until="domcontentloaded")
         else:
             logger.info("Navigiere inbox_tab zum Posteingang...")
@@ -149,10 +151,11 @@ class GmxService:
             except Exception as e:
                 logger.warning(f"inbox_tab consent failed: {e}")
             # Use stored SID for redirect, or navigate without SID as fallback
+            domain = self.sid_domain or "navigator.gmx.net"
             if self.sid:
-                await self.inbox_tab.goto(f"https://bap.navigator.gmx.net/mail?sid={self.sid}", wait_until="domcontentloaded")
+                await self.inbox_tab.goto(f"https://{domain}/mail?sid={self.sid}", wait_until="domcontentloaded")
             else:
-                await self.inbox_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded")
+                await self.inbox_tab.goto(f"https://{domain}/mail", wait_until="domcontentloaded")
             await asyncio.sleep(5)
         body = await self.inbox_tab.evaluate("() => document.body.innerText")
         if "Nicht eingeloggt" in body or ("anmelden" in body.lower()[:200] and "E-Mail" not in body):
@@ -162,15 +165,20 @@ class GmxService:
         return True
 
     async def read_otp_cdp_axtree(
-        self, sender_keyword: str = "fireworks", timeout: int = 180
+        self, sender_keyword: str = "fireworks", timeout: int = 180,
+        page: Optional[Page] = None
     ) -> Dict[str, Any]:
         """BULLETPROOF OTP via CDP Accessibility Tree.
         Umgeht das '62 Ad-Frames' Problem komplett.
         Nutzt Chromium's prozessübergreifende AXTree (durchdringt OOPIFs + Shadow-DOM).
+        
+        Args:
+            page: Page to use. Defaults to self.inbox_tab (backward compat).
         """
-        if self.inbox_tab is None:
-            logger.error("inbox_tab nicht initialisiert")
-            return {"status": "error", "otp_url": None, "error": "inbox_tab missing"}
+        page = page or self.inbox_tab
+        if page is None:
+            logger.error("No page available for OTP")
+            return {"status": "error", "otp_url": None, "error": "no page"} 
 
         logger.info(f"[CDP-AXTree] Starte OTP-Suche (Keyword: {sender_keyword}, timeout: {timeout}s)")
         pattern_url = re.compile(
@@ -183,7 +191,7 @@ class GmxService:
         cdp = None
         start_time = time.time()
         try:
-            cdp = await self.inbox_tab.context.new_cdp_session(self.inbox_tab)
+            cdp = await page.context.new_cdp_session(page)
             await cdp.send("Accessibility.enable")
             logger.info("[CDP-AXTree] CDP session erstellt")
 
@@ -192,10 +200,10 @@ class GmxService:
                 try:
                     tree_result = await cdp.send("Accessibility.getFullAXTree", {"pierce": True})
                     nodes = tree_result.get("nodes", [])
-                    logger.debug(f"[CDP-AXTree] {len(nodes)} AXTree nodes gescannt, URL: {self.inbox_tab.url[:60]}")
+                    logger.debug(f"[CDP-AXTree] {len(nodes)} AXTree nodes gescannt, URL: {page.url[:60]}")
 
                     # Session Restore / Consent / Loading page detection
-                    current_url = self.inbox_tab.url or ""
+                    current_url = page.url or ""
                     is_on_inbox = "navigator.gmx.net/mail" in current_url or "bap.navigator.gmx.net/mail" in current_url
 
                     if len(nodes) < 20 or not is_on_inbox or "logoutlounge" in current_url:
@@ -233,23 +241,20 @@ class GmxService:
                                     logger.info(f"[CDP-AXTree] Consent clicked: {result}")
                                     await asyncio.sleep(3)
                                     # After accepting consent, navigate directly to inbox
-                                    if self.sid:
-                                        await self.inbox_tab.goto(f"https://bap.navigator.gmx.net/mail?sid={self.sid}", wait_until="domcontentloaded", timeout=15000)
-                                    else:
-                                        await self.inbox_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
+                                    await page.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
                                     await asyncio.sleep(5)
                                     continue
                                 except Exception as ce:
                                     logger.warning(f"[CDP-AXTree] Consent handling failed: {ce}")
                             try:
-                                await self.inbox_tab.reload(wait_until="domcontentloaded", timeout=15000)
+                                await page.reload(wait_until="domcontentloaded", timeout=15000)
                                 await asyncio.sleep(5)
                                 logger.info("[CDP-AXTree] Page reloaded, continue polling")
                                 continue
                             except Exception as reload_err:
                                 logger.warning(f"[CDP-AXTree] Reload failed: {reload_err}")
                                 try:
-                                    await self.inbox_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
+                                    await page.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
                                     await asyncio.sleep(5)
                                 except Exception:
                                     pass
@@ -699,11 +704,16 @@ class GmxService:
                         
                         url = page.url
                         logger.info(f"After login: {url[:80]}")
-                        # Store SID for navigate_inbox
-                        m = re.search(r'[?&]sid=([a-f0-9]{50,})', url)
+                        # Store SID + subdomain for navigate_inbox
+                        m = re.search(r'(?:bap\.)?navigator\.gmx\.net/mail\?sid=([a-f0-9]{50,})', url)
                         if m:
                             self.sid = m.group(1)
-                            logger.info(f"Stored SID: {self.sid[:20]}...")
+                            # Detect which subdomain the SID is from
+                            if "bap.navigator.gmx.net" in url:
+                                self.sid_domain = "bap.navigator.gmx.net"
+                            else:
+                                self.sid_domain = "navigator.gmx.net"
+                            logger.info(f"Stored SID: {self.sid[:20]}... (domain: {self.sid_domain})")
                         if "navigator.gmx.net/mail?sid=" in url:
                             return True
                         if "navigator.gmx.net" in url:
