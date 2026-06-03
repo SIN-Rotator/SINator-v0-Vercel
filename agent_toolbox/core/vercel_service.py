@@ -175,16 +175,16 @@ class VercelService:
             # Step 3: Click "Continue with Email"
             logger.info("[Signup] Step 3: Click Continue with Email")
             try:
-                await browser_click_by_text("Continue with Email", role="button", exact=False)
-            except Exception:
+                await asyncio.wait_for(browser_click_by_text("Continue with Email", role="button", exact=False), timeout=15)
+            except Exception as e:
+                logger.warning(f"[Signup] 'Continue with Email' click failed: {e}")
                 # Fallback: generic Continue or Enter
                 try:
-                    await browser_click_by_text("Continue", role="button", exact=False)
+                    await asyncio.wait_for(browser_click_by_text("Continue", role="button", exact=False), timeout=10)
                 except Exception:
                     await browser_press("Enter")
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
             steps.append("clicked_continue_email")
-            screenshots.append(await self._screenshot("03_after_email"))
 
             # Step 4: Enter OTP
             logger.info(f"[Signup] Step 4: Enter OTP {otp_code}")
@@ -194,21 +194,19 @@ class VercelService:
                 return {"status": "failed", "error": "OTP field not found", "steps": steps, "screenshots": screenshots,
                         "execution_time": f"{time.time()-start_time:.2f}s"}
             steps.append("filled_otp")
-            screenshots.append(await self._screenshot("04_otp"))
 
             # Click Continue after OTP
             try:
-                await browser_click_by_text("Continue", role="button", exact=False)
+                await asyncio.wait_for(browser_click_by_text("Continue", role="button", exact=False), timeout=15)
             except Exception:
                 await browser_press("Enter")
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
             # Step 5: Handle password creation (if prompted)
             logger.info("[Signup] Step 5: Check for password field")
             pwd_result = await self._handle_password(password, timeout=15)
             if pwd_result:
                 steps.append("set_password")
-                screenshots.append(await self._screenshot("05_password"))
 
             # Step 6: Handle phone verification via SMSPool (if prompted)
             logger.info("[Signup] Step 6: Check for phone verification")
@@ -216,7 +214,6 @@ class VercelService:
                 phone_result = await self._handle_phone_verification(smspool_service, timeout=60)
                 if phone_result:
                     steps.append("phone_verified")
-                    screenshots.append(await self._screenshot("06_phone"))
             else:
                 logger.info("[Signup] No SMSPool service provided, skipping phone verification")
 
@@ -226,7 +223,6 @@ class VercelService:
             if not dashboard_ok:
                 logger.warning("[Signup] Dashboard not detected, continuing anyway")
             steps.append("dashboard")
-            screenshots.append(await self._screenshot("07_dashboard"))
 
             # Step 8: Generate API token
             logger.info("[Signup] Step 8: Generate API token")
