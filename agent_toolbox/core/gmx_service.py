@@ -42,8 +42,10 @@ GMX_HOME_URL = "https://www.gmx.net/"
 
 
 class GmxService:
-    def __init__(self, context=None):
+    def __init__(self, context=None, browser=None, password=None):
         self.context = context
+        self.browser = browser
+        self.password = password
         self.inbox_tab: Optional[Page] = None
         self.work_tab: Optional[Page] = None
         self.adjectives = [
@@ -143,7 +145,9 @@ class GmxService:
 
         logger.info(f"[CDP-AXTree] Starte OTP-Suche (Keyword: {sender_keyword}, timeout: {timeout}s)")
         pattern_url = re.compile(
-            r"https://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify|accounts/confirm)\S+"
+            r"(?:https://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify|accounts/confirm)|"
+            r"https://vercel\.com/(?:signup|confirm|verify|welcome|accounts/confirm)|"
+            r"https://v0\.app/(?:signup|confirm|verify|welcome))\S+"
         )
         pattern_otp = re.compile(r"\b[A-Z0-9]{6}\b")
 
@@ -1435,7 +1439,10 @@ class GmxService:
         await client.send_to_session(session_id, "Runtime.enable")
         return client, session_id
 
-    async def read_otp(self, sender_filter: str = "fireworks", max_retries: int = 12, retry_delay: int = 5, cdp_port: int = 9222) -> Dict[str, Any]:
+    async def read_otp(self, sender_filter: str = "fireworks", max_retries: int = 12, retry_delay: int = 5, cdp_port: Optional[int] = None) -> Dict[str, Any]:
+        if cdp_port is None:
+            import os
+            cdp_port = int(os.environ.get("CDP_PORT", "9230"))
         start_time = time.time()
         client = None
         try:
@@ -1537,9 +1544,9 @@ class GmxService:
                         name_val = (n.get("name", {}) or {}).get("value", "")
                         desc_val = (n.get("description", {}) or {}).get("value", "")
                         combined = f"{name_val} {desc_val}".lower()
-                        if "fireworks" in combined:
+                        if safe_filter in combined:
                             verify_nodes.append(n)
-                    logger.info(f"AXTree: {len(ax_nodes)} nodes, {len(verify_nodes)} fireworks hits")
+                    logger.info(f"AXTree: {len(ax_nodes)} nodes, {len(verify_nodes)} {sender_filter} hits")
                     if verify_nodes:
                         target_node = verify_nodes[0]
                         bid = target_node.get("backendDOMNodeId")
@@ -1572,7 +1579,7 @@ class GmxService:
                                                 if not b.strip():
                                                     html_r = await client.evaluate(ifs, 'document.body ? document.body.innerHTML : ""', return_by_value=True)
                                                     b = html_r.get("result", {}).get("value", "") or ""
-                                                urls = re.findall(r'https?://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify)[^\s\"\'<>]+', b)
+                                                urls = re.findall(rf'https?://\S*{re.escape(safe_filter)}\S*[^\s"\'<>]+', b)
                                                 if urls:
                                                     elapsed = time.time() - start_time
                                                     return {"status": "success", "otp_url": html_module.unescape(urls[0]), "mail_id": None, "execution_time": f"{elapsed:.2f}s"}
@@ -1602,7 +1609,8 @@ class GmxService:
         Sonst frische Page pro Versuch (fallback).
         """
         start_time = time.time()
-        pattern = re.compile(r'https://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify|accounts/confirm)\S+')
+        pattern = re.compile(r'(?:https://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify|accounts/confirm)|'
+                            r'https://vercel\.com/(?:signup|confirm|verify|welcome))\S+')
         for attempt in range(max_retries):
             pw_page = None
             own_page = False
@@ -1888,8 +1896,8 @@ class GmxService:
 _gmx_service: Optional[GmxService] = None
 
 
-def get_gmx_service() -> GmxService:
+def get_gmx_service(context=None, browser=None, password=None) -> GmxService:
     global _gmx_service
     if _gmx_service is None:
-        _gmx_service = GmxService()
+        _gmx_service = GmxService(context=context, browser=browser, password=password)
     return _gmx_service

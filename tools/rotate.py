@@ -20,6 +20,7 @@ import time
 import random
 import logging
 import uuid
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
@@ -45,10 +46,11 @@ if not logger.handlers:
 
 # ── Configuration ───────────────────────────────────────────────────────
 
-CDP_PORT = 9222
+CDP_PORT = int(os.environ.get("CDP_PORT", "9230"))
 POOL_FILE = Path(__file__).parent.parent / "data" / "vercel-pool.json"
 SMSPOOL_API_KEY = "nKw7Vo0JVNqPGkLSRYkn66KVockWfcoa"  # Set via env var SMSPOOL_API_KEY
-GMX_PASSWORD = ""     # Set via env var GMX_PASSWORD
+GMX_EMAIL = os.environ.get("GMX_EMAIL", "delqhi@gmx.de")
+GMX_PASSWORD = os.environ.get("GMX_PASSWORD", "")
 
 
 # ── Pool Storage ────────────────────────────────────────────────────────
@@ -86,7 +88,6 @@ async def run_rotation() -> Dict[str, Any]:
     steps = []
 
     # Load credentials from env
-    import os
     smspool_key = os.environ.get("SMSPOOL_API_KEY", SMSPOOL_API_KEY)
     gmx_password = os.environ.get("GMX_PASSWORD", GMX_PASSWORD)
 
@@ -116,9 +117,21 @@ async def run_rotation() -> Dict[str, Any]:
 
     # Initialize multi-tab architecture
     await gmx.initialize_architecture(mgr._browser)
-    # Navigate inbox_tab to GMX mail (if already logged in)
-    await gmx.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded")
-    await asyncio.sleep(5)
+
+    # Login to GMX (handles fresh session for Bot Chrome)
+    logger.info("[GMX] Logging into GMX...")
+    login_ok = await gmx._login(
+        page=gmx.work_tab,
+        email=GMX_EMAIL,
+        password=gmx_password
+    )
+    if not login_ok:
+        logger.error("GMX login failed")
+        await mgr.cleanup()
+        return {"status": "failed", "error": "GMX login failed", "steps": steps}
+
+    # Navigate inbox_tab to GMX mail
+    await gmx.navigate_inbox()
     steps.append("gmx_initialized")
 
     # Step 2: Rotate GMX Alias
@@ -171,17 +184,19 @@ async def run_rotation() -> Dict[str, Any]:
 
     # Step 4: Read OTP from GMX
     logger.info("=== STEP 4: Read OTP from GMX ===")
-    otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=20, retry_delay=5)
+    # Try CDP AXTree first (works for both Fireworks URLs and 6-digit codes)
+    otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=100)
     if otp_result.get("status") != "success":
-        logger.error(f"OTP read failed: {otp_result}")
-        # Try fallback with CDP AXTree
-        otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=100)
+        logger.info("CDP AXTree OTP not found, trying read_otp...")
+        otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=20, retry_delay=5)
     if otp_result.get("status") != "success":
         logger.error("OTP read failed completely")
         await mgr.cleanup()
         return {"status": "failed", "error": f"OTP: {otp_result}", "steps": steps}
-    otp_code = otp_result["otp_code"]
-    logger.info(f"OTP received: {otp_code}")
+    # Handle both return formats: otp_code (6-digit) or otp_url (verification link)
+    otp_code = otp_result.get("otp_code", "")
+    otp_url = otp_result.get("otp_url", "")
+    logger.info(f"OTP received: code={otp_code}, url={otp_url[:80] if otp_url else 'none'}")
     steps.append("otp_received")
 
     # Step 5: Complete signup with OTP, password, phone, API key

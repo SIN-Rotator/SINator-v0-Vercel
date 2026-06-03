@@ -22,8 +22,8 @@ import re
 from typing import Optional, Dict, Any
 
 from sin_browser_tools.core.manager import BrowserManager
-from sin_browser_tools.tools.navigation import manager as nav_mgr, browser_navigate, browser_new_tab, browser_get_url, browser_wait_for_text, browser_wait_for_load, browser_wait_for_spa_transition
-from sin_browser_tools.tools.interaction import browser_fill_react, browser_click_by_text, browser_click_checkbox_by_text, browser_press, browser_type, browser_click_cdp
+from sin_browser_tools.tools.navigation import manager as nav_mgr, browser_navigate, browser_new_tab, browser_get_url, browser_wait_for_text, browser_wait_for_load, browser_wait_for_spa_transition, browser_press
+from sin_browser_tools.tools.interaction import browser_fill_react, browser_click_by_text, browser_click_checkbox_by_text, browser_type, browser_click_cdp
 from sin_browser_tools.tools.vision import browser_screenshot
 from sin_browser_tools.tools.extraction import browser_get_html, browser_console
 from sin_browser_tools.tools.diagnostics import browser_diag_action, browser_diag_snapshot_all
