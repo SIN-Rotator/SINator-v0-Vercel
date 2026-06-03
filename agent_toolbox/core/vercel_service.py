@@ -226,7 +226,7 @@ class VercelService:
 
             # Step 8: Generate API token
             logger.info("[Signup] Step 8: Generate API token")
-            api_key = await self._generate_api_token()
+            api_key = await self._generate_api_token(alias_email=alias_email, password=password or "")
             if api_key:
                 steps.append("api_key_generated")
                 screenshots.append(await self._screenshot("08_api_key"))
@@ -447,13 +447,34 @@ class VercelService:
             await asyncio.sleep(2)
         return False
 
-    async def _generate_api_token(self) -> Optional[str]:
-        """Navigate to API tokens page, create token, and extract it."""
+    async def _generate_api_token(self, alias_email: str = "", password: str = "") -> Optional[str]:
+        """Navigate to API tokens page, create token, and extract it.
+        
+        Handles login redirect if session expired."""
         try:
             # Navigate to tokens page
             await browser_navigate(VERCEL_TOKENS_URL)
             await asyncio.sleep(8)
-            logger.info(f"[API] On tokens page, URL: {await browser_get_url()}")
+            url_info = await browser_get_url()
+            logger.info(f"[API] On tokens page, URL: {url_info}")
+            
+            # Check if redirected to login page
+            url_str = str(url_info)
+            if "/login" in url_str and alias_email and password:
+                logger.info("[API] Redirected to login, logging in first")
+                try:
+                    await browser_fill_react('input[type="email"]', alias_email)
+                    await asyncio.sleep(0.5)
+                    await browser_fill_react('input[type="password"]', password)
+                    await asyncio.sleep(0.5)
+                    await browser_press("Enter")
+                    await asyncio.sleep(8)
+                    # Re-navigate to tokens page after login
+                    await browser_navigate(VERCEL_TOKENS_URL)
+                    await asyncio.sleep(5)
+                    logger.info(f"[API] After login, URL: {await browser_get_url()}")
+                except Exception as e:
+                    logger.warning(f"[API] Login attempt failed: {e}")
 
             # Click "Create" or "Generate Token"
             created = False
@@ -522,9 +543,9 @@ class VercelService:
             await asyncio.sleep(8)
 
             # Debug: log page text
-            debug_text = await browser_console("""() => {
+            debug_text = await browser_console("""(() => {
                 return {url: window.location.href, bodyText: document.body.innerText.slice(0,500), title: document.title};
-            }()""")
+            })()""")
             logger.info(f"[API] Page debug: {debug_text}")
 
             # Extract token from page — shown only once
