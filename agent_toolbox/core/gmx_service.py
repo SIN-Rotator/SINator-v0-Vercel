@@ -118,13 +118,46 @@ class GmxService:
         logger.info("Tabs erstellt. inbox_tab wird nach Login navigiert.")
 
     async def navigate_inbox(self):
-        """Navigiert inbox_tab zum Posteingang (NUR nach Login aufrufen!)."""
+        """Navigiert inbox_tab zum Posteingang (NUR nach Login aufrufen!).
+        Nutzt SID aus work_tab um Consent-Seite zu umgehen."""
         if self.inbox_tab is None:
             logger.error("inbox_tab nicht initialisiert")
             return False
-        logger.info("Navigiere inbox_tab zum Posteingang...")
-        await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded")
+        # Extract SID from work_tab URL (already logged in)
+        sid = None
+        if self.work_tab:
+            try:
+                url = self.work_tab.url
+                m = re.search(r'[?&]sid=([a-f0-9]{50,})', url)
+                if m:
+                    sid = m.group(1)
+            except Exception:
+                pass
+        if sid:
+            mail_url = f"https://navigator.gmx.net/mail?sid={sid}"
+            logger.info(f"Navigiere inbox_tab mit SID...")
+            await self.inbox_tab.goto(mail_url, wait_until="domcontentloaded")
+        else:
+            logger.info("Navigiere inbox_tab zum Posteingang...")
+            await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded")
         await asyncio.sleep(5)
+        url = self.inbox_tab.url
+        # Handle consent redirect
+        if "consent" in url:
+            logger.info("inbox_tab landed on consent page — accepting...")
+            try:
+                for selector in ['button:has-text("Alle akzeptieren")', 'button:has-text("Zustimmen")',
+                                 'button:has-text("Akzeptieren")', 'button:has-text("OK")']:
+                    btn = self.inbox_tab.locator(selector).first
+                    if await btn.is_visible(timeout=2000):
+                        await btn.click()
+                        logger.info(f"inbox_tab consent accepted: {selector}")
+                        await asyncio.sleep(3)
+                        break
+            except Exception as e:
+                logger.warning(f"inbox_tab consent failed: {e}")
+            await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded")
+            await asyncio.sleep(5)
         body = await self.inbox_tab.evaluate("() => document.body.innerText")
         if "Nicht eingeloggt" in body or ("anmelden" in body.lower()[:200] and "E-Mail" not in body):
             logger.error("inbox_tab Session ungültig — Login vorher ausführen!")
@@ -180,6 +213,35 @@ class GmxService:
 
                         if has_session_msg or len(nodes) < 20 or "logoutlounge" in current_url:
                             logger.warning(f"[CDP-AXTree] GMX Session/Loading-Seite erkannt (nodes={len(nodes)}, inbox={is_on_inbox}, url={current_url[:60]}) — lade neu...")
+                            # Consent page detection: accept and navigate to inbox
+                            if "consent" in current_url:
+                                logger.info("[CDP-AXTree] Consent-Seite erkannt — akzeptiere via JS...")
+                                try:
+                                    result = await cdp.send("Runtime.evaluate", {
+                                        "expression": """
+                                            (() => {
+                                                const btns = document.querySelectorAll('button');
+                                                for (const b of btns) {
+                                                    const t = b.textContent.toLowerCase();
+                                                    if (t.includes('alle') || t.includes('zustimmen') ||
+                                                        t.includes('akzeptieren') || t.includes('ok')) {
+                                                        b.click();
+                                                        return 'clicked: ' + b.textContent;
+                                                    }
+                                                }
+                                                return 'no consent button found';
+                                            })()
+                                        """,
+                                        "awaitPromise": True,
+                                    })
+                                    logger.info(f"[CDP-AXTree] Consent clicked: {result}")
+                                    await asyncio.sleep(3)
+                                    # After accepting consent, navigate directly to inbox
+                                    await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
+                                    await asyncio.sleep(5)
+                                    continue
+                                except Exception as ce:
+                                    logger.warning(f"[CDP-AXTree] Consent handling failed: {ce}")
                             try:
                                 await self.inbox_tab.reload(wait_until="domcontentloaded", timeout=15000)
                                 await asyncio.sleep(5)
@@ -188,7 +250,7 @@ class GmxService:
                             except Exception as reload_err:
                                 logger.warning(f"[CDP-AXTree] Reload failed: {reload_err}")
                                 try:
-                                    await self.inbox_tab.goto(current_url, wait_until="domcontentloaded", timeout=15000)
+                                    await self.inbox_tab.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=15000)
                                     await asyncio.sleep(5)
                                 except Exception:
                                     pass
