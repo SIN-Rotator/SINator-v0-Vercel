@@ -1526,11 +1526,13 @@ class GmxService:
             url_result = await client.evaluate(session_id, "window.location.href")
             current_url = url_result.get("result", {}).get("value", "")
             sid = None
-            # Accept both bap.navigator.gmx.net and navigator.gmx.net/mail?sid= URLs
-            if "navigator.gmx.net" in current_url and "sid=" in current_url:
+            # ONLY directly use SID if we are on bap.navigator.gmx.net (proven iframe works)
+            if "bap.navigator.gmx.net" in current_url and "sid=" in current_url:
                 sid = re.search(r'[?&]sid=([^&]+)', current_url)
                 sid = sid.group(1) if sid else None
             if not sid:
+                # Always navigate to www.gmx.net and get fresh SID via Zum Postfach
+                # navigator.gmx.net SID sometimes fails to load iframe — fresh SID is safer
                 await client.navigate(session_id, "https://www.gmx.net/")
                 await asyncio.sleep(4)
                 body = await client.evaluate(session_id, "document.body.innerText")
@@ -1556,13 +1558,8 @@ class GmxService:
                 sid = sid.group(1) if sid else None
             if not sid:
                 return {"status": "error", "otp_url": None, "error": "Kein SID"}
-            # Use same subdomain as the original URL — SID is subdomain-specific
-            if "bap.navigator.gmx.net" in current_url:
-                mail_url = f"https://bap.navigator.gmx.net/mail?sid={sid}"
-            elif "navigator.gmx.net" in current_url:
-                mail_url = f"https://navigator.gmx.net/mail?sid={sid}"
-            else:
-                mail_url = f"https://bap.navigator.gmx.net/mail?sid={sid}"
+            # Use bap.navigator.gmx.net for reliable iframe loading
+            mail_url = f"https://bap.navigator.gmx.net/mail?sid={sid}"
             await client.navigate(session_id, mail_url)
             await asyncio.sleep(6)
             iframe_result = await client.evaluate(session_id, """
