@@ -83,9 +83,13 @@ class VercelService:
             return ""
 
     async def _eval(self, js: str) -> Any:
-        """Execute JS via browser_console."""
+        """Execute JS via browser_console — extracts actual value from CDP Runtime.evaluate result."""
         try:
-            return await browser_console(js)
+            result = await browser_console(js)
+            # browser_console returns CDP Runtime.evaluate dict: {"result": value, "type": ...}
+            if isinstance(result, dict) and "result" in result:
+                return result["result"]
+            return result
         except Exception as e:
             logger.warning(f"JS eval failed: {e}")
             return None
@@ -520,7 +524,7 @@ class VercelService:
                     return candidate
 
             # Strategy 2: JS extract from specific data-testid or class
-            token = await browser_console("""(() => {
+            token_result = await browser_console("""(() => {
                 // Look for token display elements
                 var selectors = ['[data-testid="token-value"]', '[class*="token"]', 'code', 'pre', '[class*="key"]', '[class*="secret"]'];
                 for (var sel of selectors) {
@@ -541,9 +545,11 @@ class VercelService:
                 }
                 return null;
             })()""")
-            if token and len(str(token)) >= 24:
-                logger.info(f"[API] Extracted token via JS: {str(token)[:12]}...")
-                return str(token).strip()
+            # browser_console returns dict with CDP Runtime.evaluate result: {"result": value, "type": ...}
+            token_val = token_result.get("result") if isinstance(token_result, dict) else token_result
+            if token_val and len(str(token_val)) >= 24:
+                logger.info(f"[API] Extracted token via JS: {str(token_val)[:12]}...")
+                return str(token_val).strip()
 
             logger.warning("[API] Could not extract token from page")
             return None
