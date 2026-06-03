@@ -231,21 +231,23 @@ async def run_rotation() -> Dict[str, Any]:
     # Switch back to Vercel tab
     mgr.set_active_page(vercel_tab)
 
-    smspool = None
-    if smspool_key:
-        smspool = SMSPoolService(api_key=smspool_key)
-    else:
-        logger.warning("SMSPOOL_API_KEY not set — phone verification will be skipped")
+    # SMSPool disabled — Vercel signup works without phone verification (proven in v0.12)
+    # smspool = None
+    # if smspool_key:
+    #     smspool = SMSPoolService(api_key=smspool_key)
+    # else:
+    #     logger.warning("SMSPOOL_API_KEY not set — phone verification will be skipped")
+    logger.info("Phone verification skipped — proceeding without SMSPool")
 
     signup_result = await vercel.signup(
         alias_email=alias_email,
         otp_code=otp_code,
-        smspool_service=smspool,
+        smspool_service=None,
         password=None  # auto-generate
     )
 
-    if smspool:
-        await smspool.close()
+    # if smspool:
+    #     await smspool.close()
 
     steps.extend(signup_result.get("steps", []))
 
