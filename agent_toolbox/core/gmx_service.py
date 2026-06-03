@@ -1526,7 +1526,8 @@ class GmxService:
             url_result = await client.evaluate(session_id, "window.location.href")
             current_url = url_result.get("result", {}).get("value", "")
             sid = None
-            if "bap.navigator.gmx.net" in current_url and "sid=" in current_url:
+            # Accept both bap.navigator.gmx.net and navigator.gmx.net/mail?sid= URLs
+            if "navigator.gmx.net" in current_url and "sid=" in current_url:
                 sid = re.search(r'[?&]sid=([^&]+)', current_url)
                 sid = sid.group(1) if sid else None
             if not sid:
@@ -1536,10 +1537,14 @@ class GmxService:
                 text = body.get("result", {}).get("value", "")
                 if "Sie sind eingeloggt" not in text and "Zum Postfach" not in text:
                     return {"status": "error", "otp_url": None, "error": "Nicht eingeloggt"}
+                # Look for both "E-Mail" and "Zum Postfach" links
                 await client.evaluate(session_id, """
                 (function(){
                     var els = Array.from(document.querySelectorAll('a, button, [role=link], nav a'));
-                    var el = els.find(e => (e.textContent||'').trim() === 'E-Mail');
+                    var el = els.find(e => {
+                        var t = (e.textContent||'').trim();
+                        return t === 'E-Mail' || t === 'Zum Postfach' || t.indexOf('E-Mail') !== -1 || t.indexOf('Postfach') !== -1;
+                    });
                     if (el) { el.click(); return true; }
                     return false;
                 })()
