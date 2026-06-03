@@ -180,21 +180,29 @@ async def run_rotation() -> Dict[str, Any]:
         except Exception:
             await browser_press("Enter")
     await asyncio.sleep(3)
+
+    # Verify page state after email submission
+    page_html = await browser_get_html()
+    if "check your email" in str(page_html).lower() or "we sent" in str(page_html).lower():
+        logger.info("Vercel: confirmation message visible — email was sent ✓")
+    else:
+        logger.warning("Vercel: no confirmation message — might need longer wait or email submission failed")
+        await asyncio.sleep(5)
+
     steps.append("vercel_email_submitted")
 
     # Step 4: Read OTP from GMX
     logger.info("=== STEP 4: Read OTP from GMX ===")
-    # Navigate work_tab to GMX inbox (work_tab has the active session from alias rotation)
-    await gmx.work_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded")
-    await asyncio.sleep(5)
-    # Try CDP AXTree on work_tab (not inbox_tab — work_tab has live session cookies)
+    # Use inbox_tab — it's on bap.navigator.gmx.net/mail?sid=...(verified in Step 1)
+    # work_tab redirects to www.gmx.net (no inbox SID)
+    # work_tab redirects to www.gmx.net (no inbox SID)
     # Use 300s timeout — Vercel emails can take several minutes
-    otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=300, page=gmx.work_tab)
+    otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=300, page=gmx.inbox_tab)
     if otp_result.get("status") != "success":
         logger.info("First OTP attempt timed out. Retrying with fresh inbox load...")
-        await gmx.work_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded")
+        await gmx.inbox_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded")
         await asyncio.sleep(5)
-        otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=300, page=gmx.work_tab)
+        otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=300, page=gmx.inbox_tab)
     if otp_result.get("status") != "success":
         logger.info("CDP AXTree OTP not found, trying read_otp...")
         otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=20, retry_delay=5)
