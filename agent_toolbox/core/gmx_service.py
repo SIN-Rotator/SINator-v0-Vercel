@@ -1556,7 +1556,13 @@ class GmxService:
                 sid = sid.group(1) if sid else None
             if not sid:
                 return {"status": "error", "otp_url": None, "error": "Kein SID"}
-            mail_url = f"https://bap.navigator.gmx.net/mail?sid={sid}"
+            # Use same subdomain as the original URL — SID is subdomain-specific
+            if "bap.navigator.gmx.net" in current_url:
+                mail_url = f"https://bap.navigator.gmx.net/mail?sid={sid}"
+            elif "navigator.gmx.net" in current_url:
+                mail_url = f"https://navigator.gmx.net/mail?sid={sid}"
+            else:
+                mail_url = f"https://bap.navigator.gmx.net/mail?sid={sid}"
             await client.navigate(session_id, mail_url)
             await asyncio.sleep(6)
             iframe_result = await client.evaluate(session_id, """
