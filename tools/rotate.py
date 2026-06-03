@@ -182,19 +182,36 @@ async def run_rotation() -> Dict[str, Any]:
     await asyncio.sleep(3)
     steps.append("vercel_email_submitted")
 
+    # Step 3.5: Refresh GMX session — session expires during alias rotation + Vercel signup (~4-5min)
+    logger.info("=== STEP 3.5: Refresh GMX Session ===")
+    # Close old GMX tabs to avoid _otp_connect() finding stale targets
+    for old_tab in [gmx.inbox_tab, gmx.work_tab]:
+        try:
+            await old_tab.close()
+            logger.info("Closed old GMX tab")
+        except Exception:
+            pass
+    # Create fresh tab and re-login for OTP reading
+    fresh_tab = await mgr.new_page()
+    login_ok = await gmx._login(
+        page=fresh_tab,
+        email=GMX_EMAIL,
+        password=gmx_password
+    )
+    if not login_ok:
+        logger.error("GMX re-login failed — session expired and cannot refresh")
+        await mgr.cleanup()
+        return {"status": "failed", "error": "GMX re-login failed", "steps": steps}
+    logger.info("GMX re-login successful — fresh session for OTP")
+    steps.append("gmx_relogged")
+
     # Step 4: Read OTP from GMX
     logger.info("=== STEP 4: Read OTP from GMX ===")
-    # SINator approach: use read_otp() as PRIMARY — creates fresh CDP connection,
-    # checks login state, gets new SID, navigates to mail iframe, clicks email, extracts OTP
+    # read_otp() creates fresh CDP connection, finds tab with sid=, navigates to mail iframe
     otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=25, retry_delay=8)
     if otp_result.get("status") != "success":
-        logger.info("read_otp failed. Fallback: CDP AXTree on inbox_tab...")
-        otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=gmx.inbox_tab)
-    if otp_result.get("status") != "success":
-        logger.info("First fallback timed out. Retrying CDP AXTree with fresh inbox load...")
-        await gmx.inbox_tab.goto("https://bap.navigator.gmx.net/mail", wait_until="domcontentloaded")
-        await asyncio.sleep(5)
-        otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=gmx.inbox_tab)
+        logger.info("read_otp failed. Fallback: CDP AXTree on fresh_tab...")
+        otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=fresh_tab)
     if otp_result.get("status") != "success":
         logger.error("OTP read failed completely")
         await mgr.cleanup()
