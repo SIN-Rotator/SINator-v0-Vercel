@@ -78,7 +78,9 @@ def add_to_pool(entry: Dict[str, Any]):
     entry["created_at"] = datetime.now(timezone.utc).isoformat()
     pool.append(entry)
     save_pool(pool)
-    logger.info(f"Added to pool: {entry.get('email')} -> key={entry.get('api_key','')[:12]}...")
+    api_key = entry.get('api_key')
+    key_preview = api_key[:12] + "..." if api_key else "NONE"
+    logger.info(f"Added to pool: {entry.get('email')} -> key={key_preview}")
 
 
 # ── Main Rotation ───────────────────────────────────────────────────────

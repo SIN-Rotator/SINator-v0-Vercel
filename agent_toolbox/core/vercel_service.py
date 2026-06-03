@@ -456,11 +456,12 @@ class VercelService:
         try:
             # Navigate to tokens page
             await browser_navigate(VERCEL_TOKENS_URL)
-            await asyncio.sleep(5)
+            await asyncio.sleep(8)
+            logger.info(f"[API] On tokens page, URL: {await browser_get_url()}")
 
             # Click "Create" or "Generate Token"
             created = False
-            for text in ["Create", "Generate Token", "New Token", "Add Token"]:
+            for text in ["Create Token", "Create", "Generate Token", "New Token", "Add Token"]:
                 try:
                     await browser_click_by_text(text, role="button", exact=False)
                     created = True
@@ -469,21 +470,30 @@ class VercelService:
                 except Exception:
                     continue
             if not created:
-                # Fallback JS click on any button containing "Create"
-                await browser_console("""(() => {
+                # Fallback JS click on any button containing "Create" or has svg/plus icon
+                click_result = await browser_console("""(() => {
                     var btns = document.querySelectorAll('button');
                     for (var i=0; i<btns.length; i++) {
-                        if (btns[i].textContent.toLowerCase().includes('create') || btns[i].textContent.toLowerCase().includes('generate')) {
+                        var t = btns[i].textContent.toLowerCase();
+                        if (t.includes('create') || t.includes('generate') || t.includes('add')) {
                             btns[i].click();
-                            return true;
+                            return {clicked: true, text: btns[i].textContent.trim()};
                         }
                     }
-                    return false;
+                    // Try first button with aria-label containing "create"
+                    var all = document.querySelectorAll('[aria-label*="create" i], [aria-label*="add" i]');
+                    if (all.length > 0) {
+                        all[0].click();
+                        return {clicked: true, text: all[0].getAttribute('aria-label')};
+                    }
+                    return {clicked: false, buttons: Array.from(btns).slice(0,5).map(b => b.textContent.trim())};
                 })()""")
-                await asyncio.sleep(2)
+                logger.info(f"[API] Fallback click result: {click_result}")
+                await asyncio.sleep(3)
 
             # Fill token name
             token_name = f"sinator-{random.randint(1000,9999)}"
+            logger.info(f"[API] Filling token name: {token_name}")
             try:
                 await browser_fill_react('input[name="name"]', token_name)
             except Exception:
@@ -491,24 +501,35 @@ class VercelService:
                     await browser_type('input[type="text"]', token_name)
                 except Exception:
                     await browser_console(f"""(() => {{
-                        var inp = document.querySelector('input[name="name"], input[placeholder*="name" i], input[type="text"]');
+                        var inp = document.querySelector('input[name="name"], input[placeholder*="name" i], input[type="text"], input[placeholder*="token" i]');
                         if (inp) {{
                             var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
                             setter.call(inp, '{token_name}');
                             inp.dispatchEvent(new Event('input', {{bubbles: true}}));
                         }}
                     }})()""")
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
 
             # Submit / create
-            try:
-                await browser_click_by_text("Create Token", role="button", exact=False)
-            except Exception:
+            submitted = False
+            for text in ["Create Token", "Create", "Generate", "Submit"]:
                 try:
-                    await browser_click_by_text("Generate", role="button", exact=False)
+                    await browser_click_by_text(text, role="button", exact=False)
+                    logger.info(f"[API] Clicked submit: '{text}'")
+                    submitted = True
+                    break
                 except Exception:
-                    await browser_press("Enter")
-            await asyncio.sleep(5)
+                    continue
+            if not submitted:
+                await browser_press("Enter")
+                logger.info("[API] Submitted via Enter key")
+            await asyncio.sleep(8)
+
+            # Debug: log page text
+            debug_text = await browser_console("""() => {
+                return {url: window.location.href, bodyText: document.body.innerText.slice(0,500), title: document.title};
+            }()""")
+            logger.info(f"[API] Page debug: {debug_text}")
 
             # Extract token from page — shown only once
             # Strategy 1: look for code/copyable text element
@@ -526,11 +547,14 @@ class VercelService:
             # Strategy 2: JS extract from specific data-testid or class
             token_result = await browser_console("""(() => {
                 // Look for token display elements
-                var selectors = ['[data-testid="token-value"]', '[class*="token"]', 'code', 'pre', '[class*="key"]', '[class*="secret"]'];
+                var selectors = ['[data-testid="token-value"]', '[class*="token"]', 'code', 'pre', '[class*="key"]', '[class*="secret"]', 'input[readonly]'];
                 for (var sel of selectors) {
                     var el = document.querySelector(sel);
                     if (el && el.textContent && el.textContent.length >= 24) {
                         return el.textContent.trim();
+                    }
+                    if (el && el.value && el.value.length >= 24) {
+                        return el.value.trim();
                     }
                 }
                 // Fallback: look for any long alphanumeric text
