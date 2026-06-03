@@ -212,7 +212,7 @@ async def run_rotation() -> Dict[str, Any]:
     # read_otp() navigates into the mail iframe (webmailer.gmx.net) where emails
     # are visible. The JSESSIONID check was a false blocker (fixed in v0.16).
     # Fallback: read_otp_cdp_axtree on fresh_tab if iframe navigation fails.
-    otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=25, retry_delay=8)
+    otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=15, retry_delay=8)
     if otp_result.get("status") != "success":
         logger.info("read_otp failed. Fallback: CDP AXTree on fresh_tab...")
         otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=fresh_tab)
