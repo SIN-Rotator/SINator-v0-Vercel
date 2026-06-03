@@ -154,8 +154,8 @@ async def run_rotation() -> Dict[str, Any]:
 
     # Open referral link and fill email (without OTP yet)
     logger.info("Navigating to referral link and filling email...")
-    from sin_browser_tools.tools.navigation import browser_navigate
-    from sin_browser_tools.tools.interaction import browser_fill_react, browser_click_by_text, browser_press
+    from sin_browser_tools.tools.navigation import browser_navigate, browser_press
+    from sin_browser_tools.tools.interaction import browser_fill_react, browser_click_by_text
     from sin_browser_tools.tools.extraction import browser_get_html
 
     await browser_navigate("https://v0.app/ref/6IMSRI")
@@ -184,8 +184,11 @@ async def run_rotation() -> Dict[str, Any]:
 
     # Step 4: Read OTP from GMX
     logger.info("=== STEP 4: Read OTP from GMX ===")
+    # Re-navigate inbox_tab to GMX inbox (may have been disrupted by Vercel tab creation)
+    await gmx.navigate_inbox()
     # Try CDP AXTree first (works for both Fireworks URLs and 6-digit codes)
-    otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=100)
+    # Use 180s timeout — Vercel emails can take 2-3 minutes
+    otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180)
     if otp_result.get("status") != "success":
         logger.info("CDP AXTree OTP not found, trying read_otp...")
         otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=20, retry_delay=5)
