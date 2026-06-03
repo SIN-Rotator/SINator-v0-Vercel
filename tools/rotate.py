@@ -180,15 +180,6 @@ async def run_rotation() -> Dict[str, Any]:
         except Exception:
             await browser_press("Enter")
     await asyncio.sleep(3)
-
-    # Verify page state after email submission
-    page_html = await browser_get_html()
-    if "check your email" in str(page_html).lower() or "we sent" in str(page_html).lower():
-        logger.info("Vercel: confirmation message visible — email was sent ✓")
-    else:
-        logger.warning("Vercel: no confirmation message — might need longer wait or email submission failed")
-        await asyncio.sleep(5)
-
     steps.append("vercel_email_submitted")
 
     # Step 4: Read OTP from GMX
