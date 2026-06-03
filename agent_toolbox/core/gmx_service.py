@@ -48,6 +48,7 @@ class GmxService:
         self.password = password
         self.inbox_tab: Optional[Page] = None
         self.work_tab: Optional[Page] = None
+        self.sid: Optional[str] = None  # GMX session SID, set after login
         self.adjectives = [
             "elron", "dark", "swift", "iron", "silver", "golden", "crystal", "shadow",
             "storm", "frost", "blaze", "thunder", "cosmic", "neon", "cyber", "quantum",
@@ -119,22 +120,13 @@ class GmxService:
 
     async def navigate_inbox(self):
         """Navigiert inbox_tab zum Posteingang (NUR nach Login aufrufen!).
-        Nutzt SID aus work_tab um Consent-Seite zu umgehen."""
+        Nutzt gespeicherte SID aus _login um Consent-Seite zu umgehen."""
         if self.inbox_tab is None:
             logger.error("inbox_tab nicht initialisiert")
             return False
-        # Extract SID from work_tab URL (already logged in)
-        sid = None
-        if self.work_tab:
-            try:
-                url = self.work_tab.url
-                m = re.search(r'[?&]sid=([a-f0-9]{50,})', url)
-                if m:
-                    sid = m.group(1)
-            except Exception:
-                pass
-        if sid:
-            mail_url = f"https://navigator.gmx.net/mail?sid={sid}"
+        # Use stored SID from _login
+        if self.sid:
+            mail_url = f"https://navigator.gmx.net/mail?sid={self.sid}"
             logger.info(f"Navigiere inbox_tab mit SID...")
             await self.inbox_tab.goto(mail_url, wait_until="domcontentloaded")
         else:
@@ -700,6 +692,11 @@ class GmxService:
                         
                         url = page.url
                         logger.info(f"After login: {url[:80]}")
+                        # Store SID for navigate_inbox
+                        m = re.search(r'[?&]sid=([a-f0-9]{50,})', url)
+                        if m:
+                            self.sid = m.group(1)
+                            logger.info(f"Stored SID: {self.sid[:20]}...")
                         if "navigator.gmx.net/mail?sid=" in url:
                             return True
                         if "navigator.gmx.net" in url:
