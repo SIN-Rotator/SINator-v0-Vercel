@@ -47,7 +47,7 @@ if not logger.handlers:
 
 CDP_PORT = 9222
 POOL_FILE = Path(__file__).parent.parent / "data" / "vercel-pool.json"
-SMSPOOL_API_KEY = ""  # Set via env var SMSPOOL_API_KEY
+SMSPOOL_API_KEY = "nKw7Vo0JVNqPGkLSRYkn66KVockWfcoa"  # Set via env var SMSPOOL_API_KEY
 GMX_PASSWORD = ""     # Set via env var GMX_PASSWORD
 
 
