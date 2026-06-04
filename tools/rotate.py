@@ -98,27 +98,45 @@ async def run_rotation() -> Dict[str, Any]:
         return {"status": "failed", "error": "GMX_PASSWORD missing", "steps": steps}
 
     # Step 0: Start isolated Chrome (temp profile — NEVER touches user Chrome)
-    # NOTE: BrowserManager(headless=False) without user_data_dir uses launch()
-    # which auto-creates a temp profile and sets _browser correctly.
-    # With user_data_dir it uses launch_persistent_context which sets _browser=None → crash.
+    # CRITICAL: Must use channel="chrome" (system Chrome) — Playwright's bundled
+    # Chromium (Chrome/120) is detected by Vercel bot protection and REJECTED
+    # with "Please try again or try a different sign up method".
+    # System Chrome (Chrome/148) passes Vercel's bot detection.
     logger.info("=== STEP 0: Start isolated Chrome ===")
+    import tempfile
+    from playwright.async_api import async_playwright
+    _user_data_dir = tempfile.mkdtemp(prefix="sinator-automation-")
+    _pw = await async_playwright().start()
+    _pw_ctx = await _pw.chromium.launch_persistent_context(
+        _user_data_dir,
+        channel="chrome",
+        headless=False,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--window-size=1200,800",
+            "--no-first-run",
+        ],
+        accept_downloads=True,
+        bypass_csp=True,
+        ignore_https_errors=True,
+        viewport={"width": 1200, "height": 800},
+    )
     mgr = BrowserManager(headless=False)
-    try:
-        await mgr.start_local()
-        nav_mgr._set_instance(mgr)
-        logger.info(f"Chrome started: {len(mgr._browser.contexts)} context(s)")
-        steps.append("chrome_started")
-    except Exception as e:
-        logger.error(f"Chrome start failed: {e}")
-        return {"status": "failed", "error": f"Chrome start: {e}", "steps": steps}
+    mgr._playwright = _pw
+    mgr._context = _pw_ctx
+    mgr._page = _pw_ctx.pages[0] if _pw_ctx.pages else await _pw_ctx.new_page()
+    mgr._browser = None  # persistent context mode — no separate browser object
+    nav_mgr._set_instance(mgr)
+    logger.info(f"System Chrome started (channel=chrome, UA=Chrome/148, temp={_user_data_dir[:30]}...)")
+    steps.append("chrome_started")
 
     # Step 1: Initialize GMX Service
     logger.info("=== STEP 1: Initialize GMX Service ===")
     gmx = get_gmx_service()
     gmx._password = gmx_password
 
-    # Initialize multi-tab architecture
-    await gmx.initialize_architecture(mgr._browser)
+    # Initialize multi-tab architecture — use _context for persistent context mode
+    await gmx.initialize_architecture(mgr._browser or mgr._context)
 
     # Login to GMX (handles fresh session for Bot Chrome)
     logger.info("[GMX] Logging into GMX...")
@@ -186,12 +204,17 @@ async def run_rotation() -> Dict[str, Any]:
 
     # Aggressive cookie banner removal before fill (ensure input is clickable)
     await browser_console("""(() => {
+        const labels = ['Deny', 'Reject all', 'Only necessary'];
+        for (const label of labels) {
+            const btns = document.querySelectorAll('button, [role="button"]');
+            for (const btn of btns) { if (btn.textContent.trim().includes(label)) { btn.click(); break; } }
+        }
         document.querySelectorAll('.cky-overlay, .cky-consent-container, .cky-modal, .cky-preference-center, [class*=cookie], [id*=cookie], [class*=consent], [id*=consent]').forEach(el => el.remove());
         document.body.style.overflow = 'visible';
     })()""")
     await asyncio.sleep(0.5)
 
-    # Fill email — try browser_fill_react, fall back to browser_type
+    # Fill email — React native value setter (Playwright .fill() doesn't update React state)
     fill_result = await browser_fill_react('input[type="email"]', alias_email)
     if not fill_result.get("success"):
         logger.warning(f"browser_fill_react failed: {fill_result.get('error')} — falling back to browser_type")
@@ -206,33 +229,29 @@ async def run_rotation() -> Dict[str, Any]:
         await browser_type('input[type="email"]', alias_email, delay_ms=30)
         await asyncio.sleep(0.5)
 
-    try:
-        await browser_click_by_text("Continue with Email", role="button", exact=False)
-        logger.info("Clicked 'Continue with Email'")
-    except Exception as e:
-        logger.warning(f"'Continue with Email' click failed: {e}")
-        try:
-            await browser_click_by_text("Continue", role="button", exact=False)
-            logger.info("Clicked 'Continue' (fallback)")
-        except Exception as e2:
-            logger.warning(f"'Continue' click also failed: {e2} — pressing Enter")
-            await browser_press("Enter")
-    await asyncio.sleep(5)
-    # Diagnostic: log page state after Continue click
-    try:
-        page_state = await browser_console("""(() => {
-            return {
-                url: window.location.href,
-                title: document.title,
-                bodySnippet: document.body.innerText.substring(0, 600),
-                emailInput: document.querySelector('input[type="email"]')?.value || 'N/A',
-                otpInput: document.querySelector('input[data-testid="otp-input"]')?.value || 'none',
-                passwordInput: document.querySelector('input[type="password"]') ? 'present' : 'absent'
-            };
-        })()""")
-        logger.info(f"[Step3] After Continue click, page state: {page_state}")
-    except Exception as diag_e:
-        logger.warning(f"[Step3] Page state diagnostic failed: {diag_e}")
+    # Submit email — Enter key is the ONLY reliable way (button clicks don't trigger React form submit)
+    await browser_press("Enter")
+    logger.info("Pressed Enter in email field")
+    await asyncio.sleep(8)
+
+    # Verify Vercel accepted the email and is now showing OTP input
+    otp_page_state = await browser_console("""(() => {
+        const digitsInput = document.querySelector('input[name="digits"]');
+        const errorText = document.body.innerText.includes('Please try again');
+        return {
+            url: window.location.href,
+            hasDigitsInput: !!digitsInput,
+            digitsVisible: digitsInput ? digitsInput.offsetParent !== null : false,
+            errorText: errorText,
+            bodySnippet: document.body.innerText.substring(0, 400)
+        };
+    })()""")
+    logger.info(f"[Step3] After Enter, OTP page state: {otp_page_state}")
+    
+    if otp_page_state.get("result", {}).get("errorText"):
+        logger.error("Vercel rejected signup — bot detection or rate limit. Check Chrome channel=chrome.")
+        await mgr.cleanup()
+        return {"status": "failed", "error": "vercel_signup_rejected", "steps": steps}
     steps.append("vercel_email_submitted")
 
     # Step 3.5: Refresh GMX session — session expires during alias rotation + Vercel signup (~4-5min)
@@ -283,35 +302,69 @@ async def run_rotation() -> Dict[str, Any]:
     logger.info(f"OTP received: code={otp_code}, url={otp_url[:80] if otp_url else 'none'}")
     steps.append("otp_received")
 
-    # Step 5: Complete signup with OTP, password, phone, API key
+    # Step 5: Enter OTP code on Vercel signup page + complete signup
     logger.info("=== STEP 5: Complete Vercel Signup ===")
-    # Switch back to Vercel tab
+    # Switch back to Vercel tab (where OTP input is shown)
     mgr.set_active_page(vercel_tab)
+    
+    # Generate password for account
+    password = vercel._generate_password()
 
-    # SMSPool disabled — Vercel signup works without phone verification (proven in v0.12)
-    # smspool = None
-    # if smspool_key:
-    #     smspool = SMSPoolService(api_key=smspool_key)
-    # else:
-    #     logger.warning("SMSPOOL_API_KEY not set — phone verification will be skipped")
-    logger.info("Phone verification skipped — proceeding without SMSPool")
-
-    signup_result = await vercel.signup(
-        alias_email=alias_email,
-        otp_code=otp_code,
-        smspool_service=None,
-        password=None  # auto-generate
-    )
-
-    # if smspool:
-    #     await smspool.close()
-
-    steps.extend(signup_result.get("steps", []))
+    # 5a: Fill OTP code in digits input
+    logger.info(f"[Step5] Entering OTP code: {otp_code}")
+    otp_filled = await vercel._fill_otp(otp_code, timeout=15)
+    if not otp_filled:
+        logger.error("OTP digits input not found on Vercel page")
+        await mgr.cleanup()
+        return {"status": "failed", "error": "OTP digits input not found", "steps": steps}
+    steps.append("filled_otp")
+    
+    # 5b: Submit OTP (Enter key or Continue button)
+    try:
+        await browser_click_by_text("Continue", role="button", exact=False)
+        logger.info("[Step5] Clicked Continue after OTP")
+    except Exception:
+        await browser_press("Enter")
+        logger.info("[Step5] Pressed Enter after OTP")
+    await asyncio.sleep(5)
+    
+    # 5c: Handle password creation if prompted
+    pwd_result = await vercel._handle_password(password, timeout=15)
+    if pwd_result:
+        steps.append("set_password")
+        logger.info("[Step5] Password set")
+    
+    # 5d: Wait for dashboard
+    dashboard_ok = await vercel._wait_for_dashboard(timeout=30)
+    if not dashboard_ok:
+        logger.warning("[Step5] Dashboard not detected, continuing anyway")
+    steps.append("dashboard")
+    
+    # 5e: Generate API token
+    api_key = await vercel._generate_api_token(alias_email=alias_email, password=password)
+    if api_key:
+        steps.append("api_key_generated")
+        logger.info(f"[Step5] API key generated: {api_key[:12]}...")
+        signup_result = {
+            "status": "success",
+            "api_key": api_key,
+            "account_email": alias_email,
+            "password": password,
+        }
+    else:
+        steps.append("api_key_failed")
+        logger.error("[Step5] API key generation failed")
+        signup_result = {
+            "status": "partial",
+            "error": "API key generation failed",
+            "account_email": alias_email,
+            "password": password,
+        }
 
     if signup_result.get("status") == "success":
         api_key = signup_result["api_key"]
         password = signup_result.get("password", "")
-        logger.info(f"Signup successful! key_id={entry.get('id', 'NONE')}")
+        logger.info(f"Signup successful! api_key={api_key[:12]}...")
         steps.append("signup_success")
 
         # Step 6: Save to pool
@@ -340,6 +393,14 @@ async def run_rotation() -> Dict[str, Any]:
     logger.info(f"Rotation completed in {elapsed:.1f}s")
 
     await mgr.cleanup()
+    # Clean up temp profile directory
+    try:
+        import shutil
+        if _user_data_dir and os.path.exists(_user_data_dir):
+            shutil.rmtree(_user_data_dir, ignore_errors=True)
+            logger.info(f"Cleaned up temp profile: {_user_data_dir[:30]}...")
+    except Exception as e:
+        logger.warning(f"Temp profile cleanup failed (non-critical): {e}")
     return {
         "status": signup_result.get("status"),
         "alias_email": alias_email,

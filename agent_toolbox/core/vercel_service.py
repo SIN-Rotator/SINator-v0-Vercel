@@ -311,6 +311,7 @@ class VercelService:
             try:
                 # Try various OTP input selectors
                 selectors = [
+                    'input[name="digits"]',
                     'input[data-testid="otp-input"]',
                     'input[name="code"]',
                     'input[name="otp"]',
