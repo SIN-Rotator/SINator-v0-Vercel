@@ -132,7 +132,7 @@ def main():
                 print(f"[cf-sync] {e}", flush=True)
             except Exception as e:  # keep the loop alive
                 print(f"[cf-sync] error: {e}", flush=True)
-            time.sleep(args.watch)
+            time.sleep(args.watch)  # sync loop OK
     else:
         sync_now(pool_path)
 

@@ -225,7 +225,7 @@ if __name__ == "__main__":
         except Exception:
             if i == 0:
                 logger.info(f"⏳ Waiting for Chrome CDP on port 9222 (max {cdp_wait}s)...")
-            import time; time.sleep(1)
+            import time; time.sleep(1)  # startup wait OK
     else:
         logger.warning("⚠️ Chrome CDP not ready — backend will start anyway")
 

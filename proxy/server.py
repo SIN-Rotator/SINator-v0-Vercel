@@ -643,7 +643,7 @@ def main():
         except Exception:
             if i == 0:
                 logger.info(f"⏳ Waiting for backend at {backend_url} (max {backend_wait}s)...")
-            time.sleep(1)
+            time.sleep(1)  # sync OK: startup wait loop
     else:
         logger.warning(f"⚠️ Backend not ready at {backend_url} — proxy will start anyway")
 

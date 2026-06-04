@@ -134,7 +134,7 @@ async def cmd_delete():
         result = await svc.create_alias(alias_name=None, cdp_port=9222)
         current = result.get("alias_email") or "unbekannt"
         print(f"   Aktueller Alias: {current}")
-    except:
+    except Exception:
         current = "unbekannt"
     
     confirm = input(f"   Alias '{current}' wirklich löschen? [y/N]: ")

@@ -29,7 +29,7 @@ def _activate_chrome():
     try:
         subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to activate'],
                        capture_output=True, timeout=5)
-        time.sleep(1.5)
+        time.sleep(1.5)  # sync OK: not in async hot path
     except Exception:
         pass
 
@@ -103,7 +103,7 @@ def find_cua_window(
         for retry in range(3):
             logger.info(f"CUA window retry {retry+1}/3...")
             _activate_chrome()
-            time.sleep(2)
+            time.sleep(2)  # sync OK: not in async hot path
             res2 = subprocess.run(
                 ["cua-driver", "call", "list_windows"],
                 capture_output=True, text=True, timeout=10,
