@@ -3,7 +3,7 @@ SINator v0+Vercel — Full Rotation Orchestrator
 Docs: rotate.doc.md
 
 End-to-End Flow:
-  1. Chrome via CDP verbinden (Port 9222, Profile 73)
+  1. Isolierten Chrome starten (temp-Profil, NIE User-Chrome)
   2. GMX Alias rotieren (löschen + erstellen)
   3. Vercel Signup mit Referral-Link (v0.app/ref/6IMSRI)
   4. GMX OTP (6-stellig numerisch) abrufen
@@ -26,6 +26,7 @@ from typing import Dict, Any, Optional
 
 from sin_browser_tools.core.manager import BrowserManager
 from sin_browser_tools.tools.navigation import manager as nav_mgr
+from sin_browser_tools.tools.extraction import browser_console
 
 # Import our services
 import sys
@@ -46,7 +47,6 @@ if not logger.handlers:
 
 # ── Configuration ───────────────────────────────────────────────────────
 
-CDP_PORT = int(os.environ.get("CDP_PORT", "9230"))
 POOL_FILE = Path(__file__).parent.parent / "data" / "vercel-pool.json"
 SMSPOOL_API_KEY = "nKw7Vo0JVNqPGkLSRYkn66KVockWfcoa"  # Set via env var SMSPOOL_API_KEY
 GMX_EMAIL = os.environ.get("GMX_EMAIL", "delqhi@gmx.de")
@@ -97,25 +97,25 @@ async def run_rotation() -> Dict[str, Any]:
         logger.error("GMX_PASSWORD not set — cannot login to GMX")
         return {"status": "failed", "error": "GMX_PASSWORD missing", "steps": steps}
 
-    # Step 0: Connect to Chrome via CDP
-    logger.info("=== STEP 0: Connect to Chrome via CDP ===")
+    # Step 0: Start isolated Chrome (temp profile — NEVER touches user Chrome)
+    # NOTE: BrowserManager(headless=False) without user_data_dir uses launch()
+    # which auto-creates a temp profile and sets _browser correctly.
+    # With user_data_dir it uses launch_persistent_context which sets _browser=None → crash.
+    logger.info("=== STEP 0: Start isolated Chrome ===")
     mgr = BrowserManager(headless=False)
     try:
-        await mgr.connect_cdp(f"http://127.0.0.1:{CDP_PORT}")
+        await mgr.start_local()
         nav_mgr._set_instance(mgr)
-        logger.info(f"Connected to Chrome: {len(mgr._browser.contexts)} context(s)")
-        steps.append("chrome_connected")
+        logger.info(f"Chrome started: {len(mgr._browser.contexts)} context(s)")
+        steps.append("chrome_started")
     except Exception as e:
-        logger.error(f"Chrome connect failed: {e}")
-        return {"status": "failed", "error": f"Chrome connect: {e}", "steps": steps}
+        logger.error(f"Chrome start failed: {e}")
+        return {"status": "failed", "error": f"Chrome start: {e}", "steps": steps}
 
     # Step 1: Initialize GMX Service
     logger.info("=== STEP 1: Initialize GMX Service ===")
-    gmx = get_gmx_service(
-        browser=mgr._browser,
-        context=mgr._context,
-        password=gmx_password
-    )
+    gmx = get_gmx_service()
+    gmx._password = gmx_password
 
     # Initialize multi-tab architecture
     await gmx.initialize_architecture(mgr._browser)
@@ -159,6 +159,7 @@ async def run_rotation() -> Dict[str, Any]:
     from sin_browser_tools.tools.navigation import browser_navigate, browser_press
     from sin_browser_tools.tools.interaction import browser_fill_react, browser_click_by_text
     from sin_browser_tools.tools.extraction import browser_get_html
+    from sin_browser_tools.tools.navigation import browser_get_url
 
     await browser_navigate("https://v0.app/ref/6IMSRI")
     await asyncio.sleep(5)
@@ -166,11 +167,22 @@ async def run_rotation() -> Dict[str, Any]:
     await asyncio.sleep(1)
 
     # Wait for email field and fill
-    for _ in range(15):
-        html = await browser_get_html()
-        if 'type="email"' in str(html).lower() or 'name="email"' in str(html).lower():
-            break
+    for i in range(15):
+        try:
+            html = await browser_get_html()
+            html_str = str(html).lower()
+            if 'type="email"' in html_str or 'name="email"' in html_str:
+                logger.info(f"Email field found after {i+1}s")
+                break
+        except Exception as e:
+            logger.warning(f"Email field check #{i} failed: {e}")
         await asyncio.sleep(1)
+    else:
+        logger.error("Email field not found after 15s — Vercel page may not have loaded correctly")
+        url_result = await browser_get_url()
+        logger.error(f"Current URL: {url_result}")
+        await mgr.cleanup()
+        return {"status": "failed", "error": "vercel_email_field_not_found", "steps": steps}
 
     # Aggressive cookie banner removal before fill (ensure input is clickable)
     await browser_console("""(() => {
@@ -196,12 +208,31 @@ async def run_rotation() -> Dict[str, Any]:
 
     try:
         await browser_click_by_text("Continue with Email", role="button", exact=False)
-    except Exception:
+        logger.info("Clicked 'Continue with Email'")
+    except Exception as e:
+        logger.warning(f"'Continue with Email' click failed: {e}")
         try:
             await browser_click_by_text("Continue", role="button", exact=False)
-        except Exception:
+            logger.info("Clicked 'Continue' (fallback)")
+        except Exception as e2:
+            logger.warning(f"'Continue' click also failed: {e2} — pressing Enter")
             await browser_press("Enter")
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
+    # Diagnostic: log page state after Continue click
+    try:
+        page_state = await browser_console("""(() => {
+            return {
+                url: window.location.href,
+                title: document.title,
+                bodySnippet: document.body.innerText.substring(0, 600),
+                emailInput: document.querySelector('input[type="email"]')?.value || 'N/A',
+                otpInput: document.querySelector('input[data-testid="otp-input"]')?.value || 'none',
+                passwordInput: document.querySelector('input[type="password"]') ? 'present' : 'absent'
+            };
+        })()""")
+        logger.info(f"[Step3] After Continue click, page state: {page_state}")
+    except Exception as diag_e:
+        logger.warning(f"[Step3] Page state diagnostic failed: {diag_e}")
     steps.append("vercel_email_submitted")
 
     # Step 3.5: Refresh GMX session — session expires during alias rotation + Vercel signup (~4-5min)
@@ -224,17 +255,23 @@ async def run_rotation() -> Dict[str, Any]:
         logger.error("GMX re-login failed — session expired and cannot refresh")
         await mgr.cleanup()
         return {"status": "failed", "error": "GMX re-login failed", "steps": steps}
-    logger.info("GMX re-login successful — fresh session for OTP")
+    gmx.inbox_tab = fresh_tab
+    nav_ok = await gmx.navigate_inbox()
+    if not nav_ok:
+        logger.error("inbox_tab navigation failed after re-login")
+        await mgr.cleanup()
+        return {"status": "failed", "error": "inbox navigation failed", "steps": steps}
+    logger.info(f"GMX re-login + inbox nav OK (SID={gmx.sid[:20] if gmx.sid else 'None'}...)")
     steps.append("gmx_relogged")
 
     # Step 4: Read OTP from GMX
     logger.info("=== STEP 4: Read OTP from GMX ===")
-    # read_otp() navigates into the mail iframe (webmailer.gmx.net) where emails
-    # are visible. The JSESSIONID check was a false blocker (fixed in v0.16).
-    # Fallback: read_otp_cdp_axtree on fresh_tab if iframe navigation fails.
-    otp_result = await gmx.read_otp(sender_filter="vercel", max_retries=15, retry_delay=8)
+    # read_otp_main_frame_only uses Playwright native (no CDP needed).
+    # Works with isolated Chrome which has no fixed CDP port.
+    # Fallback: read_otp_cdp_axtree on fresh_tab if main-frame scan fails.
+    otp_result = await gmx.read_otp_main_frame_only(sender_keyword="vercel", timeout=120)
     if otp_result.get("status") != "success":
-        logger.info("read_otp failed. Fallback: CDP AXTree on fresh_tab...")
+        logger.info("Main-frame OTP failed. Fallback: CDP AXTree...")
         otp_result = await gmx.read_otp_cdp_axtree(sender_keyword="vercel", timeout=180, page=fresh_tab)
     if otp_result.get("status") != "success":
         logger.error("OTP read failed completely")

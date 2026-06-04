@@ -176,7 +176,7 @@ Key als Fallback. **Niemals blockieren, niemals warten.**
 
 **Subagents DÜRFEN NIEMALS Chrome killen. NIEMALS `pkill -9 -f "Google Chrome"`.**
 
-Der AGENTS.md Chrome-Start-Command (`pkill -9 -f "Google Chrome"` → `nohup Chrome ...`) ist NUR für den MAIN-AGENT wenn Chrome tot ist.
+Ab v0.37 nutzt `rotate.py` isolierten Chrome mit temp-Profil (`BrowserManager.start_local()`). Es ist KEIN `pkill` mehr nötig — weder für Subagents noch für den Main-Agent. Der User-Chrome (Profile 73, Port 9222) bleibt unberührt.
 
 ### Warum
 - Chrome auf Port 9222 mit Profile 73 ist die EINZIGE lebende GMX-Session. Killen = Rotation kaputt.
@@ -185,20 +185,16 @@ Der AGENTS.md Chrome-Start-Command (`pkill -9 -f "Google Chrome"` → `nohup Chr
 
 ### Pflicht-Check VOR jeder Rotation im Subagent
 
+Ab v0.37 nutzt `rotate.py` isolierten Chrome (`BrowserManager.start_local()`). Kein CDP, kein laufender Chrome nötig — der Bot startet seinen eigenen Chromium.
+
 ```bash
-# 1. Chrome schon da?
-curl -s http://127.0.0.1:9222/json/version > /dev/null 2>&1 || {
-    echo "❌ Chrome NICHT auf 9222 — Main-Agent informieren, NICHT selbst starten!"
-    exit 1
-}
-
-# 2. Läuft schon eine Rotation?
+# 1. Läuft schon eine Rotation?
 pgrep -f "rotate.py" > /dev/null 2>&1 && {
-    echo "❌ rotate.py LÄUFT BEREITS — warten oder Main-Agent fragen!"
+    echo "❌ rotate.py LÄUFT BEREITS — warten!"
     exit 1
 }
 
-# 3. Beides OK → Rotation starten
+# 2. Rotation starten (isoliert, kein User-Chrome nötig)
 python3 tools/rotate.py
 ```
 

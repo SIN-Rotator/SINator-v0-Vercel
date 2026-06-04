@@ -204,7 +204,10 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
                                or "verify" in full_lower or "confirm" in full_lower or "code" in full_lower)
                     if has_ctx:
                         # 1) Fireworks Confirm-URL bevorzugt (eindeutiger als ein 6-stelliger Code)
-                        url_m = re.search(r'https://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify|accounts/confirm)\S+', full_text)
+                        if sender_keyword.lower() == "vercel":
+                            url_m = re.search(r'https://vercel\.com/[^\s\"\'<>]+(?:verify|confirm|token)[^\s\"\'<>]*', full_text)
+                        else:
+                            url_m = re.search(r'https://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify|accounts/confirm)\S+', full_text)
                         if url_m:
                             elapsed = time.time() - start
                             logger.info(f"OTP-URL in Frame {frame.url[:60]} gefunden")
@@ -240,8 +243,11 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
         url_pattern = re.compile(r'https://app\.fireworks\.ai/signup/confirm\?[^\s"\'<>]+')
 
         try:
-            # Connect SIN-Browser-Tools manager + register inbox_tab
-            await sin_mgr.connect_cdp('http://127.0.0.1:9222')
+            # Ensure SIN-Browser-Tools manager is active + register inbox_tab
+            # (connect_cdp is a no-op if already started by rotate.py)
+            if not sin_mgr.started:
+                logger.warning("[OTP-v2] sin_mgr not started — cannot scan frames")
+                return {"status": "error", "otp_url": None, "error": "browser manager not started"}
             sin_mgr.set_active_page(self.inbox_tab)
 
             # 1. Navigate to inbox
@@ -442,11 +448,17 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
             # On auth.gmx.net login page — step 1: fill email, click Weiter
             if "auth.gmx.net" in url or "login.gmx.net" in url:
                 logger.info("Step 1: Filling email on auth.gmx.net")
-                # The email input has name=username, id=email
+                # The email input has name=username, id=email (React setter)
                 email_input = page.locator('input[id="email"], input[name="username"]').first
                 if await email_input.is_visible(timeout=5000):
-                    await email_input.fill(email)
-                    logger.info("Email filled")
+                    await page.evaluate(f"""(() => {{
+                        var inp = document.querySelector('input[id="email"], input[name="username"]');
+                        var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                        setter.call(inp, '{email}');
+                        inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    }})()""")
+                    logger.info("Email filled (React setter)")
                 
                 # Click Weiter button
                 await asyncio.sleep(0.5)
@@ -466,13 +478,19 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
                             await asyncio.sleep(4)
                             break
                 
-                # Step 2: fill password, click Login
+                # Step 2: fill password (React setter), click Login
                 url = page.url
                 logger.info(f"After Weiter, URL: {url[:80]}")
                 password_input = page.locator('input[type="password"]').first
                 if await password_input.is_visible(timeout=5000):
-                    await password_input.fill(password)
-                    logger.info("Password filled")
+                    await page.evaluate(f"""(() => {{
+                        var inp = document.querySelector('input[type="password"]');
+                        var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                        setter.call(inp, '{password}');
+                        inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    }})()""")
+                    logger.info("Password filled (React setter)")
                 
                 await asyncio.sleep(0.5)
                 login_btn = page.locator('button:has-text("Login")').first
@@ -516,11 +534,17 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
                     
                     if "auth.gmx.net" in url or "login.gmx.net" in url:
                         logger.info("On login page after clicking Login")
-                        # Fill email (step 1)
+                        # Fill email (React native setter)
                         email_input = page.locator('input[id="email"], input[name="username"]').first
                         if await email_input.is_visible(timeout=5000):
-                            await email_input.fill(email)
-                            logger.info("Email filled")
+                            await page.evaluate(f"""(() => {{
+                                var inp = document.querySelector('input[id="email"], input[name="username"]');
+                                var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                                setter.call(inp, '{email}');
+                                inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                                inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            }})()""")
+                            logger.info("Email filled (React setter)")
                         
                         await asyncio.sleep(0.5)
                         weiter_btn = page.locator('button:has-text("Weiter")').first
@@ -539,11 +563,17 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
                             """)
                             await asyncio.sleep(1)
                         
-                        # Step 2: password
+                        # Step 2: password (React native setter — .fill() alone doesn't update React state)
                         password_input = page.locator('input[type="password"]').first
                         if await password_input.is_visible(timeout=8000):
-                            await password_input.fill(password)
-                            logger.info("Password filled")
+                            await page.evaluate(f"""(() => {{
+                                var inp = document.querySelector('input[type="password"]');
+                                var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                                setter.call(inp, '{password}');
+                                inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                                inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            }})()""")
+                            logger.info("Password filled (React setter)")
                         
                         await asyncio.sleep(0.5)
                         login_btn = page.locator('button:has-text("Login")').first
@@ -573,14 +603,26 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
             except Exception as e:
                 logger.warning(f"Homepage login flow failed: {e}")
             
-            # Legacy fallback
+            # Legacy fallback (React setter for both fields)
             logger.info("Trying legacy login flow")
             email_input = page.locator('input[name="email"]').first
             if await email_input.is_visible(timeout=5000):
-                await email_input.fill(email)
+                await page.evaluate(f"""(() => {{
+                    var inp = document.querySelector('input[name="email"]');
+                    var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                    setter.call(inp, '{email}');
+                    inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                }})()""")
             password_input = page.locator('input[type="password"]').first
             if await password_input.is_visible(timeout=5000):
-                await password_input.fill(password)
+                await page.evaluate(f"""(() => {{
+                    var inp = document.querySelector('input[type="password"]');
+                    var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                    setter.call(inp, '{password}');
+                    inp.dispatchEvent(new Event('input', {{bubbles: true}}));
+                    inp.dispatchEvent(new Event('change', {{bubbles: true}}));
+                }})()""")
             submit_btn = page.locator('button[type="submit"]').first
             if await submit_btn.is_visible(timeout=3000):
                 await submit_btn.click()
@@ -1433,9 +1475,16 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
 
         logger.info(f"[Main-Frame-OTP] Start (Keyword: {sender_keyword}, timeout: {timeout}s)")
 
-        pattern_url = re.compile(
-            r"https://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify|accounts/confirm)\S+"
-        )
+        if sender_keyword.lower() == "vercel":
+            pattern_url = re.compile(
+                r"https://vercel\.com/[^\s\"'<>]+(?:verify|confirm|token)[^\s\"'<>]*"
+            )
+            pattern_otp = re.compile(r'\b\d{6}\b')
+        else:
+            pattern_url = re.compile(
+                r"https://app\.fireworks\.ai/(?:signup/(?:confirm|verify)|confirm|verify|accounts/confirm)\S+"
+            )
+            pattern_otp = None
 
         scan_js = r"""
         (SENDER) => {
@@ -1461,6 +1510,7 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
 
         start_time = time.time()
         deadline = start_time + timeout
+        click_offset = 0
 
         while time.time() < deadline:
             try:
@@ -1487,12 +1537,14 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
                                     logger.info(f"[Main-Frame-OTP] URL found after {elapsed:.1f}s")
                                     return {"status": "success", "otp_url": html_module.unescape(urls[0]),
                                             "otp_code": None, "execution_time": f"{elapsed:.2f}s"}
-                            # URL not in list — click first matching email to open it
-                            logger.info(f"[Main-Frame-OTP] Clicking first matching email ({len(items)} items)")
-                            clicked = await frame.evaluate("(nth) => { function walk(r) { let n=0; try { var els=r.querySelectorAll('*'); } catch(e){return false; } for(var e of els){ if((e.tagName||'').toLowerCase()==='list-mail-item') { if(n++===nth) { e.click(); return true; } } if(e.shadowRoot && walk(e.shadowRoot)) return true; } return false; } return walk(document.body); }", 0)
+                            # Click matching email to open it — iterate through items
+                            target_idx = min(click_offset, len(items) - 1)
+                            logger.info(f"[Main-Frame-OTP] Clicking email index {target_idx} of {len(items)} items (offset={click_offset})")
+                            clicked = await frame.evaluate("(nth) => { function walk(r) { let n=0; try { var els=r.querySelectorAll('*'); } catch(e){return false; } for(var e of els){ if((e.tagName||'').toLowerCase()==='list-mail-item') { if(n++===nth) { e.click(); return true; } } if(e.shadowRoot && walk(e.shadowRoot)) return true; } return false; } return walk(document.body); }", target_idx)
                             if clicked:
                                 await asyncio.sleep(3)
                                 # Scan ALL frames for the verify URL in the opened email body
+                                found_in_body = False
                                 for sf in self.inbox_tab.frames:
                                     try:
                                         body_text = await sf.evaluate("() => document.body ? document.body.innerText.substring(0,10000) : ''")
@@ -1502,8 +1554,23 @@ class GmxService(GmxServiceOtpCdpMixin, GmxServiceOtpReaderMixin, GmxServiceOtpP
                                             logger.info(f"[Main-Frame-OTP] URL found in frame '{sf.name}' after {elapsed:.1f}s")
                                             return {"status": "success", "otp_url": html_module.unescape(urls[0]),
                                                     "otp_code": None, "execution_time": f"{elapsed:.2f}s"}
+                                        if pattern_otp:
+                                            has_verify_ctx = any(k in body_text.lower() for k in ("verif", "code", "confirm", "bestätig", "einmal"))
+                                            if has_verify_ctx:
+                                                otp_m = pattern_otp.search(body_text)
+                                                if otp_m:
+                                                    elapsed = time.time() - start_time
+                                                    logger.info(f"[Main-Frame-OTP] OTP code {otp_m.group()} found in frame '{sf.name}' after {elapsed:.1f}s")
+                                                    return {"status": "success", "otp_url": None,
+                                                            "otp_code": otp_m.group(), "execution_time": f"{elapsed:.2f}s"}
+                                        # Check if this email has any verify-like content at all
+                                        if any(k in body_text.lower() for k in ("verif", "code", "confirm", "bestätig", "einmal", "otp", "passwort")):
+                                            found_in_body = True
                                     except Exception:
                                         continue
+                                if not found_in_body and click_offset < len(items) - 1:
+                                    click_offset += 1
+                                    logger.info(f"[Main-Frame-OTP] No OTP in email {target_idx}, trying next (offset now {click_offset})")
                     except Exception:
                         continue
 

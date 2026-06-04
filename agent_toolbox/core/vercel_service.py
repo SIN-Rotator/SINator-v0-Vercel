@@ -103,23 +103,29 @@ class VercelService:
         aggressive JS removal to ensure the banner never blocks form fields.
         """
         logger.info("[CookieBanner] Checking for cookie banner...")
-        clicked = False
-        # Phase 1: try clicking known labels (with role="button" first)
-        for role in ["button", None]:
-            for text in ["Deny", "Decline", "Ablehnen", "Reject all", "Only necessary",
-                         "Accept all", "Alle akzeptieren", "Accept", "Zustimmen"]:
-                try:
-                    kwargs = {"exact": False}
-                    if role:
-                        kwargs["role"] = role
-                    await browser_click_by_text(text, **kwargs)
-                    logger.info(f"[CookieBanner] Clicked '{text}' (role={role})")
-                    clicked = True
-                    break
-                except Exception:
-                    continue
-            if clicked:
-                break
+
+        # Phase 1: Quick JS-based click (1 attempt, no Playwright timeout)
+        # Avoids browser_click_by_text which has 30s timeout per attempt
+        try:
+            await browser_console("""(() => {
+                const labels = ['Deny', 'Decline', 'Reject all', 'Only necessary',
+                                'Ablehnen', 'Accept all', 'Accept', 'Zustimmen', 'Alle akzeptieren'];
+                for (const label of labels) {
+                    const btns = document.querySelectorAll('button, [role="button"], a');
+                    for (const btn of btns) {
+                        if (btn.textContent.trim().includes(label)) {
+                            btn.click();
+                            return label;
+                        }
+                    }
+                }
+                return null;
+            })()""")
+            logger.info("[CookieBanner] JS click attempted")
+        except Exception as e:
+            logger.warning(f"[CookieBanner] JS click failed: {e}")
+
+        await asyncio.sleep(0.3)
 
         # Phase 2: aggressive JS removal (always run, removes banners + restores scroll)
         removal_js = """(() => {
@@ -487,18 +493,33 @@ class VercelService:
             if "/login" in url_str and alias_email and password:
                 logger.info("[API] Redirected to login, logging in first")
                 try:
+                    await browser_click_by_text("Continue with Email", role="button", exact=False)
+                    await asyncio.sleep(3)
                     await browser_fill_react('input[type="email"]', alias_email)
-                    await asyncio.sleep(0.5)
-                    await browser_fill_react('input[type="password"]', password)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1)
                     await browser_press("Enter")
-                    await asyncio.sleep(8)
-                    # Re-navigate to tokens page after login
+                    await asyncio.sleep(5)
+                    await browser_fill_react('input[type="password"]', password)
+                    await asyncio.sleep(1)
+                    await browser_press("Enter")
+                    await asyncio.sleep(10)
+                    url_after = await browser_get_url()
+                    logger.info(f"[API] After login, URL: {url_after}")
+                    if "/login" in str(url_after):
+                        logger.error("[API] Still on login page after multi-step login attempt")
+                        return None
                     await browser_navigate(VERCEL_TOKENS_URL)
                     await asyncio.sleep(5)
-                    logger.info(f"[API] After login, URL: {await browser_get_url()}")
+                    logger.info(f"[API] After re-navigate to tokens, URL: {await browser_get_url()}")
                 except Exception as e:
                     logger.warning(f"[API] Login attempt failed: {e}")
+                    return None
+
+            # Verify we're actually on the tokens page (not still on login)
+            current_url = await browser_get_url()
+            if "/login" in str(current_url):
+                logger.error("[API] Still on login page, cannot generate token")
+                return None
 
             # Click "Create" or "Generate Token"
             created = False
