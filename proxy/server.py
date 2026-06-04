@@ -44,6 +44,16 @@ try:
 except ImportError:
     from config import AGENT_ID
 
+try:
+    from proxy.key_lifecycle import KeyLifecycleMixin
+except ImportError:
+    from key_lifecycle import KeyLifecycleMixin
+
+try:
+    from proxy.handlers import ProxyHandlersMixin
+except ImportError:
+    from handlers import ProxyHandlersMixin
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
@@ -52,24 +62,6 @@ logger = logging.getLogger("pool-proxy")
 
 POOL_AUTH_TOKEN = os.environ.get("SINATOR_AUTH_TOKEN", "").strip()
 NO_BACKUP = os.environ.get("SIN_NO_BACKUP", "false").lower() == "true"
-
-DEAD_KEY_CODES = {401, 402, 403, 412}
-SWAP_REASONS = {
-    401: "unauthorized",
-    402: "credits_exhausted",
-    403: "suspended",
-    412: "suspended",
-    429: "rate_limited",
-}
-
-PERMANENT_429_KEYWORDS = ("account.*suspended", "monthly spending limit", "reached.*limit", "suspended due to", "spending limit")
-# Keine "monthly" oder "quota exceeded" allein — zu viele False Positives
-
-# Alle Codes werden VERIFIZIERT (Body-Check + /chat/completions) bevor ein Swap passiert.
-# NICHTS wird blind als "tot" angenommen — auch 402 nicht.
-PERMANENT_ERROR_KEYWORDS = ("suspended", "deactivated", "disabled", "invalid api key", "revoked", "expired", "payment required")
-CONFIRMED_DEAD_CODES = set()  # LEER — alles wird verifiziert
-MAYBE_DEAD_CODES = {401, 402, 403, 412}
 
 PUBLIC_PROXY_PATHS = ("/health", "/pool-status", "/v1/models")
 
@@ -115,7 +107,26 @@ async def _pool_auth_middleware(request: web.Request, handler) -> web.Response:
     return await handler(request)
 
 
-class PoolProxy:
+class PoolProxy(KeyLifecycleMixin, ProxyHandlersMixin):
+    DEAD_KEY_CODES = {401, 402, 403, 412}
+    SWAP_REASONS = {
+        401: "unauthorized",
+        402: "credits_exhausted",
+        403: "suspended",
+        412: "suspended",
+        429: "rate_limited",
+    }
+    PERMANENT_429_KEYWORDS = ("account.*suspended", "monthly spending limit", "reached.*limit", "suspended due to", "spending limit")
+    # Keine "monthly" oder "quota exceeded" allein — zu viele False Positives
+
+    # Alle Codes werden VERIFIZIERT (Body-Check + /chat/completions) bevor ein Swap passiert.
+    # NICHTS wird blind als "tot" angenommen — auch 402 nicht.
+    PERMANENT_ERROR_KEYWORDS = ("suspended", "deactivated", "disabled", "invalid api key", "revoked", "expired", "payment required")
+    CONFIRMED_DEAD_CODES = set()  # LEER — alles wird verifiziert
+    MAYBE_DEAD_CODES = {401, 402, 403, 412}
+
+    MAX_CONSECUTIVE_SWAPS = 2
+
     def __init__(self):
         cfg = load_config()
         self.port = cfg.get("proxy_port", 8888)
@@ -139,6 +150,7 @@ class PoolProxy:
         # V19.14 Phase 2: Per-session AgentKeyCaches, keyed by x-agent-id header
         self._session_caches: Dict[str, Any] = {}
         self._session_caches[self.agent_id] = self.cache  # default proxy cache
+        self.no_backup = NO_BACKUP
 
     def _get_session_cache(self, agent_id: str):
         """V19.14 Phase 2: Get or create AgentKeyCache for a session agent_id."""
@@ -186,406 +198,6 @@ class PoolProxy:
         await self.pool_client.close()
         if self.fw_session:
             await self.fw_session.close()
-
-    async def _ensure_key(self, agent_id: str = None):
-        """V19.14: Soft-ownership — never blocks, never retries.
-        
-        Uses per-session AgentKeyCache if x-agent-id header is present.
-        Falls back to proxy's default agent_id.
-        """
-        if agent_id is None:
-            agent_id = self.agent_id
-        
-        # Get the right cache for this session
-        cache = self._get_session_cache(agent_id)
-        
-        # 1. Cache hit
-        key = cache.get_primary()
-        if key:
-            return key
-        
-        # 2. Get from backend (no retry loop!)
-        result = await self.pool_client.get_agent_key(
-            agent_id=agent_id,
-            preferred_key_id=cache.preferred_key_id,
-        )
-        
-        if result and result.get("api_key"):
-            cache.set_primary(result)
-            return result
-        
-        return None
-
-    @staticmethod
-    def _lease_to_key_info(lease: dict) -> dict:
-        return {
-            "api_key": lease["api_key"],
-            "key_id": lease["key_id"],
-            "lease_id": lease.get("lease_id", ""),
-            "expires_at": lease.get("expires_at", 0),
-            "alias_email": lease.get("alias_email", ""),
-            "key_name": lease.get("key_name", ""),
-        }
-
-    async def _fetch_backup(self):
-        """V19.14: No backup keys needed — sharing is the fallback."""
-        pass
-
-    async def _swap_key(self, reason: str) -> Optional[dict]:
-        old = self.cache.primary
-        if old:
-            report_result = await self.pool_client.report(
-                key_id=old.get("key_id"),
-                api_key=old.get("api_key"),
-                reason=reason,
-                leased_to=self.proxy_id,
-            )
-            self.cache.clear_primary()
-            # Use the replacement key returned by report() (already leased atomically)
-            if report_result and report_result.get("new_api_key"):
-                key_info = {
-                    "api_key": report_result["new_api_key"],
-                    "key_id": report_result.get("new_key_id", ""),
-                    "lease_id": report_result.get("lease_id", ""),
-                    "expires_at": report_result.get("expires_at", 0),
-                    "alias_email": report_result.get("new_alias", ""),
-                    "key_name": report_result.get("new_key_name", ""),
-                }
-                self.cache.set_primary(key_info)
-                logger.info(f"Key swapped ({reason}): new key {key_info.get('key_id','?')[:8]}... (from report+lease)")
-                return key_info
-
-        # Fallback: report didn't return a replacement → lease one
-        if not NO_BACKUP:
-            promoted = self.cache.promote_backup()
-            if promoted:
-                asyncio.create_task(self._fetch_backup())
-                return promoted
-        lease_result = await self.pool_client.lease(leased_to=self.proxy_id)
-        if not lease_result:
-            logger.error("No replacement key available!")
-            return None
-        key_info = self._lease_to_key_info(lease_result)
-        self.cache.set_primary(key_info)
-        if not NO_BACKUP:
-            if lease_result.get("backup"):
-                self.cache.set_backup(self._lease_to_key_info(lease_result["backup"]))
-            else:
-                asyncio.create_task(self._fetch_backup())
-        logger.info(f"Key swapped ({reason}): new key {key_info.get('key_id','?')[:8]}...")
-        return key_info
-
-    MAX_CONSECUTIVE_SWAPS = 2
-
-    async def _verify_key_dead(self, api_key: str) -> bool:
-        """Verify key via lightweight chat request — more accurate than /models."""
-        try:
-            body = {
-                "model": "accounts/fireworks/models/deepseek-v4-flash",
-                "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 1,
-                "stream": False,
-            }
-            async with self.fw_session.post(
-                f"{self.fireworks_base}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=body,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as r:
-                if r.status == 200:
-                    return False
-                text = await r.text()
-                is_dead = any(kw in text.lower() for kw in PERMANENT_ERROR_KEYWORDS)
-                logger.debug(f"Key verification: HTTP {r.status}, dead={is_dead}, body={text[:120]}")
-                return is_dead
-        except Exception:
-            return False
-
-    async def _handle_proxy(self, request: web.Request) -> web.Response:
-        path = request.match_info.get("path", "")
-        fw_url = f"{self.fireworks_base}/{path}"
-        return await self._do_proxy(request, fw_url)
-
-    async def _handle_proxy_v1(self, request: web.Request) -> web.Response:
-        path = request.match_info.get("path", "")
-        fw_url = f"{self.fireworks_base}/{path}"
-        return await self._do_proxy(request, fw_url)
-
-    MODEL_CACHE_PATH = Path.home() / ".hermes" / "models_dev_cache.json"
-
-    @staticmethod
-    def _load_all_model_ids() -> list[str]:
-        """Load all Fireworks model IDs from the models.dev cache (or fallback)."""
-        try:
-            raw = PoolProxy.MODEL_CACHE_PATH.read_text()
-            registry = json.loads(raw)
-            fw = registry.get("fireworks-ai", {})
-            return list(fw.get("models", {}).keys())
-        except Exception:
-            return [
-                "accounts/fireworks/models/deepseek-v4-flash",
-                "accounts/fireworks/models/deepseek-v4-pro",
-                "accounts/fireworks/models/glm-5p1",
-                "accounts/fireworks/models/gpt-oss-120b",
-                "accounts/fireworks/models/gpt-oss-20b",
-                "accounts/fireworks/models/kimi-k2p5",
-                "accounts/fireworks/models/kimi-k2p6",
-                "accounts/fireworks/models/minimax-m2p5",
-                "accounts/fireworks/models/minimax-m2p7",
-                "accounts/fireworks/models/qwen3p6-plus",
-                "accounts/fireworks/routers/glm-5p1-fast",
-                "accounts/fireworks/routers/kimi-k2p6-turbo",
-            ]
-
-    @staticmethod
-    def _build_model_alias_map(model_ids: list[str]) -> dict[str, str]:
-        """Build short_name → full_path lookup for all model IDs."""
-        m = {}
-        for mid in model_ids:
-            parts = mid.split("/")
-            short = parts[-1]  # e.g. "glm-5p1-fast", "deepseek-v4-flash"
-            m[short] = mid
-        return m
-
-    async def _normalize_request_body(self, body: Optional[bytes]) -> Optional[bytes]:
-        """Normalize model name in request body — expand short names to full paths."""
-        if not body:
-            return body
-        try:
-            parsed = json.loads(body)
-        except Exception:
-            return body
-        model = parsed.get("model", "")
-        if not model or "/" in model:
-            return body
-        model_ids = self._load_all_model_ids()
-        alias_map = self._build_model_alias_map(model_ids)
-        full = alias_map.get(model)
-        if full and full != model:
-            parsed["model"] = full
-            logger.debug(f"Normalized model: {model} → {full}")
-            return json.dumps(parsed).encode()
-        return body
-
-    async def _handle_v1_models(self, request: web.Request) -> web.Response:
-        """Return all Fireworks models from the models.dev cache.
-
-        Reads the community-maintained models.dev registry on disk
-        (``~/.hermes/models_dev_cache.json``) to list ALL Fireworks
-        models and routers — not just the subset the current pool key
-        can access.
-
-        Falls back to a curated subset if the cache is unavailable.
-        """
-        model_ids = self._load_all_model_ids()
-        now = int(time.time())
-        data = [
-            {"id": m, "object": "model", "created": now, "owned_by": "fireworks"}
-            for m in sorted(model_ids)
-        ]
-        return web.json_response({"object": "list", "data": data})
-
-    async def _ensure_key_with_retry(self, agent_id: str = None, max_attempts: int = 5, delay: float = 2.0) -> Optional[Dict[str, Any]]:
-        """V19.14: Short retry for transient empty-pool resets (max 5 attempts, 2s each).
-        
-        Down from 300 attempts (5min) in V19.12. Soft-ownership means keys
-        are never permanently blocked by leases.
-        """
-        for attempt in range(max_attempts):
-            key_info = await self._ensure_key(agent_id=agent_id)
-            if key_info:
-                return key_info
-            if attempt < max_attempts - 1:
-                await asyncio.sleep(delay)
-        return None
-
-    async def _do_proxy(self, request: web.Request, fw_url: str) -> web.Response:
-        # V19.14 Phase 2: Per-session key assignment via x-agent-id header
-        session_agent_id = request.headers.get("x-agent-id", self.agent_id)
-        key_info = await self._ensure_key_with_retry(agent_id=session_agent_id)
-        if not key_info:
-            return web.json_response(
-                {"error": "no_api_key", "message": "No API key available in pool"},
-                status=503,
-            )
-
-        headers = self._build_forward_headers(request, key_info)
-        is_sse = self._is_streaming_request(request, fw_url)
-        consecutive_swaps = 0
-
-        for attempt in range(self.max_retries):
-            try:
-                req_body = await request.read() if request.method in ("POST", "PUT", "PATCH") else None
-                req_body = await self._normalize_request_body(req_body)
-
-                async with self._make_fw_request(request.method, fw_url, headers, req_body, request.query) as fw_resp:
-                    status = fw_resp.status
-
-                    if status in DEAD_KEY_CODES:
-                        error_body_bytes = await fw_resp.read()
-                        error_text = error_body_bytes.decode(errors="replace").lower()
-
-                        consecutive_swaps += 1
-                        if consecutive_swaps > self.MAX_CONSECUTIVE_SWAPS:
-                            logger.error(f"Cascade stop: {consecutive_swaps} swaps, returning error")
-                            return web.Response(body=error_body_bytes, status=status,
-                                                content_type=fw_resp.headers.get("Content-Type", "application/json"))
-                        reason = SWAP_REASONS.get(status, "unknown")
-                        if status in MAYBE_DEAD_CODES:
-                            # Prüfe Response-Body auf echte Dead-Keywords
-                            is_confirmed_dead = any(kw in error_text for kw in PERMANENT_ERROR_KEYWORDS)
-                            if is_confirmed_dead:
-                                logger.info(f"Confirmed dead via error body: {status} ({reason}) — matched keyword in response, swapping immediately")
-                                new_key = await self._swap_key(reason)
-                                if new_key and attempt < self.max_retries - 1:
-                                    headers["Authorization"] = f"Bearer {new_key['api_key']}"
-                                    return web.Response(
-                                        body=b'{"error":"key_swapped","message":"Pool key rotated, please retry","retry_after":1}',
-                                        status=503,
-                                        content_type="application/json",
-                                        headers={"Retry-After": "1"},
-                                    )
-                                return web.Response(body=error_body_bytes, status=status,
-                                                    content_type=fw_resp.headers.get("Content-Type", "application/json"))
-                            # Body-Keywords matchten nicht — zusätzlich via /models verifizieren
-                            models_dead = await self._verify_key_dead(key_info['api_key'])
-                            if not models_dead:
-                                logger.warning(f"Key got {status} but error body + /models don't confirm dead — retrying same key")
-                                await asyncio.sleep(2)
-                                continue
-                        logger.warning(f"Dead key: {status} ({reason}), swapping (attempt {attempt+1})...")
-                        new_key = await self._swap_key(reason)
-                        if new_key and attempt < self.max_retries - 1:
-                            headers["Authorization"] = f"Bearer {new_key['api_key']}"
-                            # Key wurde intern getauscht — sag dem Client er soll retryen
-                            return web.Response(
-                                body=b'{"error":"key_swapped","message":"Pool key rotated, please retry","retry_after":1}',
-                                status=503,
-                                content_type="application/json",
-                                headers={"Retry-After": "1"},
-                            )
-                        return web.Response(body=error_body_bytes, status=status,
-                                            content_type=fw_resp.headers.get("Content-Type", "application/json"))
-
-                    if status == 429:
-                        error_text = await fw_resp.text()
-                        is_permanent = any(kw in error_text.lower() for kw in PERMANENT_429_KEYWORDS)
-                        if is_permanent:
-                            consecutive_swaps += 1
-                            if consecutive_swaps > self.MAX_CONSECUTIVE_SWAPS:
-                                logger.error(f"Cascade stop: {consecutive_swaps} swaps for permanent 429")
-                                return web.Response(body=error_text.encode(), status=429,
-                                                    content_type="application/json")
-                            logger.warning(f"Permanent 429 (spending limit matched: {[kw for kw in PERMANENT_429_KEYWORDS if kw in error_text.lower()]}), swapping...")
-                            new_key = await self._swap_key("rate_limited_permanent")
-                            if new_key and attempt < self.max_retries - 1:
-                                headers["Authorization"] = f"Bearer {new_key['api_key']}"
-                                # Intern getauscht — Client retryen
-                                return web.Response(
-                                    body=b'{"error":"key_rotated","message":"Rate limit reached, key rotated. Retry now.","retry_after":1}',
-                                    status=503,
-                                    content_type="application/json",
-                                    headers={"Retry-After": "1"},
-                                )
-                            return web.Response(body=error_text.encode(), status=429,
-                                                content_type="application/json")
-                        # Transientes 429 — SOFORT an Client zurückgeben mit Retry-After
-                        # (nicht intern warten — verhindert Client-Timeouts + InvalidHTTPResponse)
-                        retry_after = fw_resp.headers.get("Retry-After", "5")
-                        try:
-                            wait = min(int(retry_after), 30)
-                        except ValueError:
-                            wait = 5
-                        logger.info(f"Temporary 429, returning to client with Retry-After: {wait}s")
-                        return web.Response(
-                            body=error_text.encode(),
-                            status=429,
-                            content_type=fw_resp.headers.get("Content-Type", "application/json"),
-                            headers={"Retry-After": str(wait)},
-                        )
-
-                    if status >= 500:
-                        logger.warning(f"Fireworks server error: {status}, retrying (attempt {attempt+1})...")
-                        await asyncio.sleep(2)
-                        continue
-
-                    if is_sse and status == 200:
-                        return await self._stream_sse(request, fw_resp)
-
-                    body = await fw_resp.read()
-                    resp = web.Response(body=body, status=status)
-                    for k, v in fw_resp.headers.items():
-                        kl = k.lower()
-                        if kl not in ("transfer-encoding", "content-encoding", "connection"):
-                            resp.headers[k] = v
-                    return resp
-
-            except asyncio.TimeoutError:
-                logger.warning(f"Fireworks timeout (attempt {attempt+1})")
-                continue
-            except aiohttp.ClientError as e:
-                logger.warning(f"Fireworks connection error: {e}")
-                await asyncio.sleep(2)
-                continue
-
-        return web.json_response(
-            {"error": "max_retries_exceeded", "message": f"Failed after {self.max_retries} attempts"},
-            status=502,
-        )
-
-    @staticmethod
-    def _build_forward_headers(request: web.Request, key_info: dict) -> dict:
-        headers = {}
-        for k, v in request.headers.items():
-            kl = k.lower()
-            if kl in ("host", "authorization", "content-length", "transfer-encoding", "x-api-key"):
-                continue
-            headers[k] = v
-        headers["Authorization"] = f"Bearer {key_info['api_key']}"
-        headers["Host"] = "api.fireworks.ai"
-        return headers
-
-    def _make_fw_request(self, method: str, url: str, headers: dict,
-                         body: Optional[bytes], query: dict):
-        if method == "GET":
-            return self.fw_session.get(url, headers=headers, params=query)
-        elif method == "POST":
-            return self.fw_session.post(url, headers=headers, data=body)
-        elif method == "PUT":
-            return self.fw_session.put(url, headers=headers, data=body)
-        elif method == "PATCH":
-            return self.fw_session.patch(url, headers=headers, data=body)
-        elif method == "DELETE":
-            return self.fw_session.delete(url, headers=headers)
-        return self.fw_session.get(url, headers=headers)
-
-    @staticmethod
-    def _is_streaming_request(request: web.Request, path: str) -> bool:
-        accept = request.headers.get("Accept", "")
-        if "text/event-stream" in accept:
-            return True
-        if "/chat/completions" in path or "/completions" in path:
-            return True
-        return False
-
-    async def _stream_sse(self, request: web.Request, fw_resp) -> web.Response:
-        resp = web.StreamResponse(
-            status=200,
-            headers={
-                "Content-Type": fw_resp.headers.get("Content-Type", "text/event-stream"),
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-        await resp.prepare(request)
-        try:
-            async for chunk in fw_resp.content.iter_chunked(4096):
-                await resp.write(chunk)
-        except (ConnectionResetError, asyncio.CancelledError):
-            pass
-        await resp.write_eof()
-        return resp
 
     async def _health(self, request: web.Request) -> web.Response:
         key = self.cache.get_primary()
@@ -643,7 +255,7 @@ def main():
         except Exception:
             if i == 0:
                 logger.info(f"⏳ Waiting for backend at {backend_url} (max {backend_wait}s)...")
-            time.sleep(1)  # sync OK: startup wait loop
+            time.sleep(1)
     else:
         logger.warning(f"⚠️ Backend not ready at {backend_url} — proxy will start anyway")
 
