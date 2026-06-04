@@ -14,6 +14,7 @@ from pathlib import Path
 _this_dir = Path(__file__).resolve().parent
 _root = _this_dir.parent
 sys.path.insert(0, str(_root))
+sys.path.insert(0, str(_root))  # repo root for agent_toolbox imports
 sys.path.insert(0, str(_root / "agent_toolbox" / "core"))
 
 import agent_toolbox.core.gmx_service as _gmx

@@ -29,6 +29,7 @@ from sin_browser_tools.tools.navigation import manager as nav_mgr
 
 # Import our services
 import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root for agent_toolbox imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "agent_toolbox" / "core"))
 from gmx_service import GmxService, get_gmx_service
 from vercel_service import VercelService

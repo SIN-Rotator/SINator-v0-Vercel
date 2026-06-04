@@ -6,6 +6,7 @@ Docs: test_otp_mailbox.doc.md
 import sys, os, asyncio, logging
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root for agent_toolbox imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "agent_toolbox" / "core"))
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')

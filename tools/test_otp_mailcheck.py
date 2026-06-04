@@ -12,6 +12,7 @@ import time
 import logging
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))  # repo root for agent_toolbox imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "agent_toolbox" / "core"))
 
 from playwright.async_api import async_playwright
