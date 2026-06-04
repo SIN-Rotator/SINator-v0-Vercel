@@ -172,8 +172,28 @@ async def run_rotation() -> Dict[str, Any]:
             break
         await asyncio.sleep(1)
 
-    await browser_fill_react('input[type="email"]', alias_email)
+    # Aggressive cookie banner removal before fill (ensure input is clickable)
+    await browser_console("""(() => {
+        document.querySelectorAll('.cky-overlay, .cky-consent-container, .cky-modal, .cky-preference-center, [class*=cookie], [id*=cookie], [class*=consent], [id*=consent]').forEach(el => el.remove());
+        document.body.style.overflow = 'visible';
+    })()""")
     await asyncio.sleep(0.5)
+
+    # Fill email — try browser_fill_react, fall back to browser_type
+    fill_result = await browser_fill_react('input[type="email"]', alias_email)
+    if not fill_result.get("success"):
+        logger.warning(f"browser_fill_react failed: {fill_result.get('error')} — falling back to browser_type")
+        from sin_browser_tools.tools.interaction import browser_type
+        await browser_type('input[type="email"]', alias_email, delay_ms=30)
+    await asyncio.sleep(0.5)
+
+    # Verify field actually contains the alias
+    email_val = (await browser_console("document.querySelector('input[type=email], input[name=email]')?.value")).get("result", "")
+    if not email_val or alias_email not in str(email_val):
+        logger.error(f"Email field empty after fill! value='{email_val}'")
+        await browser_type('input[type="email"]', alias_email, delay_ms=30)
+        await asyncio.sleep(0.5)
+
     try:
         await browser_click_by_text("Continue with Email", role="button", exact=False)
     except Exception:

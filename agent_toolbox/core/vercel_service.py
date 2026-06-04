@@ -97,38 +97,50 @@ class VercelService:
     # ── Cookie Banner ────────────────────────────────────────────────────
 
     async def _handle_cookie_banner(self) -> bool:
-        """Handle Vercel cookie consent banner: click Deny or Accept all."""
+        """Handle Vercel cookie consent banner: click Deny or Accept all.
+
+        Tries text-based click first (with and without role filter), then
+        aggressive JS removal to ensure the banner never blocks form fields.
+        """
         logger.info("[CookieBanner] Checking for cookie banner...")
+        clicked = False
+        # Phase 1: try clicking known labels (with role="button" first)
+        for role in ["button", None]:
+            for text in ["Deny", "Decline", "Ablehnen", "Reject all", "Only necessary",
+                         "Accept all", "Alle akzeptieren", "Accept", "Zustimmen"]:
+                try:
+                    kwargs = {"exact": False}
+                    if role:
+                        kwargs["role"] = role
+                    await browser_click_by_text(text, **kwargs)
+                    logger.info(f"[CookieBanner] Clicked '{text}' (role={role})")
+                    clicked = True
+                    break
+                except Exception:
+                    continue
+            if clicked:
+                break
+
+        # Phase 2: aggressive JS removal (always run, removes banners + restores scroll)
+        removal_js = """(() => {
+            const selectors = [
+                '.cky-overlay', '.cky-consent-container', '.cky-modal', '.cky-preference-center',
+                '[data-testid*="cookie"]', '[class*="cookie"]', '[id*="cookie"]',
+                '[class*="consent"]', '[id*="consent"]', '[class*="CookieYes"]',
+                '.osano-cm-window', '#onetrust-banner-sdk', '.cookie-modal'
+            ];
+            selectors.forEach(sel => document.querySelectorAll(sel).forEach(el => el.remove()));
+            document.body.style.overflow = 'visible';
+            document.body.style.position = 'static';
+        })()"""
         try:
-            # Try clicking "Deny" first (less tracking)
-            for text in ["Deny", "Decline", "Ablehnen", "Reject all", "Only necessary"]:
-                try:
-                    await browser_click_by_text(text, role="button", exact=False)
-                    logger.info(f"[CookieBanner] Clicked '{text}'")
-                    await asyncio.sleep(1)
-                    return True
-                except Exception:
-                    continue
-            # Fallback: Accept all
-            for text in ["Accept all", "Alle akzeptieren", "Accept", "Zustimmen"]:
-                try:
-                    await browser_click_by_text(text, role="button", exact=False)
-                    logger.info(f"[CookieBanner] Clicked '{text}' (fallback)")
-                    await asyncio.sleep(1)
-                    return True
-                except Exception:
-                    continue
-            # JS fallback: hide banner
-            await browser_console("""(() => {
-                const banners = document.querySelectorAll('[data-testid*="cookie"], [class*="cookie"], [id*="cookie"], [class*="consent"], [id*="consent"]');
-                banners.forEach(b => b.style.display = 'none');
-                document.body.style.overflow = 'visible';
-            })()""")
-            logger.info("[CookieBanner] No banner found or hidden via JS")
-            return True
+            await browser_console(removal_js)
+            logger.info("[CookieBanner] Aggressive JS removal executed")
         except Exception as e:
-            logger.warning(f"[CookieBanner] Error: {e}")
-            return False
+            logger.warning(f"[CookieBanner] JS removal failed: {e}")
+
+        await asyncio.sleep(0.5)
+        return True
 
     # ── Signup Flow ──────────────────────────────────────────────────────
 
@@ -167,8 +179,20 @@ class VercelService:
             logger.info(f"[Signup] Step 2: Fill email {alias_email}")
             # Vercel signup page may redirect; wait for email field
             await self._wait_for_email_field(timeout=15)
-            await browser_fill_react('input[type="email"]', alias_email)
+
+            fill_result = await browser_fill_react('input[type="email"]', alias_email)
+            if not fill_result.get("success"):
+                logger.warning(f"[Signup] browser_fill_react failed: {fill_result.get('error')} — falling back to browser_type")
+                await browser_type('input[type="email"]', alias_email, delay_ms=30)
             await asyncio.sleep(0.5)
+
+            # Verify field contains the alias (React sometimes reverts)
+            email_val = await self._eval("document.querySelector('input[type=email], input[name=email]')?.value")
+            if not email_val or alias_email not in str(email_val):
+                logger.error(f"[Signup] Email field empty after fill! value='{email_val}' — retrying with browser_type")
+                await browser_type('input[type="email"]', alias_email, delay_ms=30)
+                await asyncio.sleep(0.5)
+
             steps.append("filled_email")
             screenshots.append(await self._screenshot("02_email"))
 
