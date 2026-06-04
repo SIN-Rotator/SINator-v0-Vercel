@@ -237,21 +237,27 @@ async def run_rotation() -> Dict[str, Any]:
     # Verify Vercel accepted the email and is now showing OTP input
     otp_page_state = await browser_console("""(() => {
         const digitsInput = document.querySelector('input[name="digits"]');
-        const errorText = document.body.innerText.includes('Please try again');
+        const bodyText = document.body.innerText;
         return {
             url: window.location.href,
             hasDigitsInput: !!digitsInput,
             digitsVisible: digitsInput ? digitsInput.offsetParent !== null : false,
-            errorText: errorText,
-            bodySnippet: document.body.innerText.substring(0, 400)
+            errorText: bodyText.includes('Please try again'),
+            bodySnippet: bodyText.substring(0, 400)
         };
     })()""")
     logger.info(f"[Step3] After Enter, OTP page state: {otp_page_state}")
     
-    if otp_page_state.get("result", {}).get("errorText"):
-        logger.error("Vercel rejected signup — bot detection or rate limit. Check Chrome channel=chrome.")
+    # Parse the result (browser_console returns {'result': '...', 'type': '...'})
+    state_str = str(otp_page_state.get("result", ""))
+    if "Please try again" in state_str:
+        logger.error("Vercel rejected signup — bot detection or rate limit")
         await mgr.cleanup()
         return {"status": "failed", "error": "vercel_signup_rejected", "steps": steps}
+    if "digits" not in state_str and "code to" not in state_str:
+        logger.error(f"Vercel didn't show OTP input — unexpected page state")
+        await mgr.cleanup()
+        return {"status": "failed", "error": "vercel_otp_page_not_shown", "steps": steps}
     steps.append("vercel_email_submitted")
 
     # Step 3.5: Refresh GMX session — session expires during alias rotation + Vercel signup (~4-5min)
