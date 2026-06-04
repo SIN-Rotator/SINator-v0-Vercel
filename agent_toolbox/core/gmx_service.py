@@ -527,8 +527,10 @@ class GmxService:
     async def _login(self, page: Page, email: str, password: str) -> bool:
         """Login to GMX via Playwright. Two-step flow: Email → Weiter → Password → Login."""
         logger.info(f"[_login] Logging in to GMX as {email}")
+        # V0.31: Auto-dismiss all dialogs/alerts — these block Playwright operations indefinitely
+        page.on("dialog", lambda dialog: asyncio.create_task(dialog.dismiss()))
         try:
-            await page.goto("https://www.gmx.net/", wait_until="domcontentloaded")
+            await page.goto("https://www.gmx.net/", wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(5)  # Wait for JS redirect
             
             url = page.url
@@ -554,7 +556,7 @@ class GmxService:
                 # After consent, we're on consent-management page — navigate to real www.gmx.net
                 if "consent" in url:
                     logger.info("Navigating to www.gmx.net after consent")
-                    await page.goto("https://www.gmx.net/", wait_until="domcontentloaded")
+                    await page.goto("https://www.gmx.net/", wait_until="domcontentloaded", timeout=30000)
                     await asyncio.sleep(3)
                     url = page.url
                     logger.info(f"After consent redirect: {url[:80]}")
@@ -579,7 +581,7 @@ class GmxService:
                 
                 # Try direct navigation to inbox
                 logger.info("Trying direct navigator.gmx.net/mail")
-                await page.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded")
+                await page.goto("https://navigator.gmx.net/mail", wait_until="domcontentloaded", timeout=30000)
                 await asyncio.sleep(5)
                 if "navigator.gmx.net/mail?sid=" in page.url:
                     return True
@@ -798,7 +800,7 @@ class GmxService:
         # Step 1: Navigate to jump URL → redirects to 3c.gmx.net (top frame!)
         jump_url = f"https://navigator.gmx.net/navigator/jump/to/mail_settings?sid={sid}"
         logger.info(f"STEP 1: Navigating to jump URL")
-        await page.goto(jump_url, wait_until="domcontentloaded")
+        await page.goto(jump_url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(6)
         
         url = page.url
@@ -1845,7 +1847,7 @@ class GmxService:
     async def check_session(self, cdp_port: int = 9222, page: Optional[Page] = None) -> Dict[str, Any]:
         try:
             page = await self._pw_connect(cdp_port, page=page)
-            await page.goto("https://www.gmx.net/", wait_until="domcontentloaded")
+            await page.goto("https://www.gmx.net/", wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
             text = await page.evaluate("() => document.body.innerText")
             logged_in = "Sie sind eingeloggt" in text or "Zum Postfach" in text
